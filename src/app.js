@@ -1583,7 +1583,7 @@
   const freshListing = () => ({
     title: "", titleEdited: false, extras: null, price: "", bestOffer: true, accept: "", decline: "",
     cat: "", catEdited: false, store: "", storeEdited: false, ship: "", spec: {}, desc: "", descEdited: false,
-    photos: { plate: true, obv: true, rev: true, cert: true }, uploads: {}, itemId: "", note: "", noteKind: "",
+    photos: { plate: true, obv: true, rev: true, cert: true, oobv: true, orev: true, ocert: true }, uploads: {}, itemId: "", note: "", noteKind: "",
   });
   let soloListing = freshListing();
   function curListing() {
@@ -1618,29 +1618,55 @@
     if (el.value !== (selected || "")) el.value = selected || "";
   }
 
-  // listing photo previews: plate, obverse, reverse, certificate
-  const PHOTO_KEYS = [["plate", "Plate"], ["obv", "Obverse"], ["rev", "Reverse"], ["cert", "Certificate"]];
+  // listing photos: the plate, the three crops, then the original photos as taken
+  // (an original used twice, like a holder front that gives the obverse and the label, appears once)
+  const PHOTO_KEYS = [["plate", "Plate"], ["obv", "Obverse"], ["rev", "Reverse"], ["cert", "Certificate"],
+    ["oobv", "Obverse photo"], ["orev", "Reverse photo"], ["ocert", "Label photo"]];
+  const ORIGINAL_OF = { oobv: "obv", orev: "rev", ocert: "cert" };
+  const isOriginal = (k) => !!ORIGINAL_OF[k];
+  function photoAvailable(k) {
+    if (k === "plate") return !exampleMode();
+    const side = sides[ORIGINAL_OF[k] || k];
+    if (!side.src) return false;
+    if (k === "ocert" && side.file && (side.file === sides.obv.file || side.file === sides.rev.file)) return false;
+    if (k === "orev" && side.file && side.file === sides.obv.file) return false;
+    return true;
+  }
+  const holderShots = () => !!(sides.cert.file && sides.cert.file === sides.obv.file);
+  function photoLabel(k, label) {
+    if (holderShots() && k === "oobv") return "Front photo";
+    if (holderShots() && k === "orev") return "Back photo";
+    return label;
+  }
+  // the original photo, re-encoded: same pixels and colour, but no location or other camera data
+  function originalCanvas(side, maxDim) {
+    return Math.max(side.w, side.h) <= maxDim ? side.src : scaledCanvas(side.src, side.w, side.h, maxDim);
+  }
   function buildPhotoPicker() {
     const box = $("ePhotos");
     for (const [k, label] of PHOTO_KEYS) {
       const l = document.createElement("label"); l.className = "ephoto";
       const i = document.createElement("input"); i.type = "checkbox"; i.id = "eph-" + k; i.checked = true;
       const c = document.createElement("canvas"); c.width = c.height = 152; c.id = "ephc-" + k;
-      const s = document.createElement("span"); s.textContent = label;
+      const s = document.createElement("span"); s.textContent = label; s.id = "ephl-" + k;
       l.append(i, c, s); box.appendChild(l);
       i.addEventListener("change", () => { curListing().photos[k] = i.checked; renderListing(); });
     }
   }
   function drawListingPhotos() {
-    const key = ["obv", "rev", "cert"].map((k) => sides[k].ver).join(".") + look.bg + look.captions;
+    const key = ["obv", "rev", "cert"].map((k) => sides[k].ver + ":" + sides[k].photoId).join(".") + look.bg + look.captions;
     if (key === ebay.photoKey) return;
     ebay.photoKey = key;
-    for (const [k] of PHOTO_KEYS) {
+    for (const [k, label] of PHOTO_KEYS) {
       const c = $("ephc-" + k), x = c.getContext("2d");
-      x.fillStyle = BG[look.bg].bg; x.fillRect(0, 0, c.width, c.height);
+      $("ephl-" + k).textContent = photoLabel(k, label);
+      $("eph-" + k).parentElement.hidden = k !== "plate" && !photoAvailable(k) && isOriginal(k);
+      x.fillStyle = isOriginal(k) ? "#000" : BG[look.bg].bg; x.fillRect(0, 0, c.width, c.height);
       let src = null;
-      if (k === "plate") src = exampleMode() ? null : $("plate");
-      else if (sides[k].src) src = k === "cert" ? certCanvas(sides[k], 400) : coinCanvas(sides[k], 300);
+      if (!photoAvailable(k)) src = null;
+      else if (k === "plate") src = $("plate");
+      else if (isOriginal(k)) src = sides[ORIGINAL_OF[k]].src;
+      else src = k === "cert" ? certCanvas(sides[k], 400) : coinCanvas(sides[k], 300);
       if (!src) continue;
       const s = Math.min(c.width / src.width, c.height / src.height);
       x.drawImage(src, (c.width - src.width * s) / 2, (c.height - src.height * s) / 2, src.width * s, src.height * s);
@@ -1655,7 +1681,7 @@
     if (!L.cat) return ebay.cache.cats.length ? "Choose a category." : "eBay's categories haven't loaded. Open eBay settings and tap Reload from eBay.";
     if (!L.ship || !ebay.settings.payment || !ebay.settings.returns) return "Choose your shipping, payment and return policies in eBay settings.";
     if (!ebay.settings.location.trim() && !ebay.settings.postal.trim()) return "Add the item location in eBay settings.";
-    if (!PHOTO_KEYS.some(([k]) => L.photos[k] && (k === "plate" || sides[k].src))) return "Choose at least one photo.";
+    if (!PHOTO_KEYS.some(([k]) => L.photos[k] && photoAvailable(k))) return "Choose at least one photo.";
     return "";
   }
 
@@ -1701,8 +1727,8 @@
     setVal("eDesc", L.desc);
     $("eDescReset").hidden = !L.descEdited;
     for (const [k] of PHOTO_KEYS) {
-      const i = $("eph-" + k), has = k === "plate" ? !exampleMode() : !!sides[k].src;
-      i.disabled = !has; i.checked = has && L.photos[k];
+      const i = $("eph-" + k), has = photoAvailable(k);
+      i.disabled = !has; i.checked = has && L.photos[k] !== false;
     }
     drawListingPhotos();
     $("eNote").textContent = L.note;
@@ -1739,16 +1765,15 @@
     const plateKey = ["obv", "rev", "cert"].map((k) => sides[k].ver).join(".") + look.bg + look.captions;
     const out = [];
     for (const [k] of PHOTO_KEYS) {
-      if (!L.photos[k]) continue;
-      if (k !== "plate" && !sides[k].src) continue;
-      if (k === "plate" && exampleMode()) continue;
-      const key = k === "plate" ? plateKey : String(sides[k].ver);
+      if (L.photos[k] === false || !photoAvailable(k)) continue;
+      const key = k === "plate" ? plateKey : isOriginal(k) ? "photo" + sides[ORIGINAL_OF[k]].photoId : String(sides[k].ver);
       if (L.uploads[k] && L.uploads[k].key === key) { out.push({ k, key, url: L.uploads[k].url }); continue; }
       let c;
       if (k === "plate") { c = document.createElement("canvas"); renderPlate(c, P.S, false); }
+      else if (isOriginal(k)) c = originalCanvas(sides[ORIGINAL_OF[k]], 3000);
       else if (k === "cert") c = certCanvas(sides.cert, Math.min(1600, Math.max(400, Math.round(sides.cert.rw))));
       else c = onBackground(coinCanvas(sides[k], Math.min(1600, Math.max(400, Math.round(sides[k].r * 2)))));
-      out.push({ k, key, data: jpegOf(c) });
+      out.push({ k, key, data: jpegOf(c, isOriginal(k) ? 0.9 : 0.92) });
     }
     return out;
   }
