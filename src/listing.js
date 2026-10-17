@@ -156,6 +156,23 @@ function listingModule() {
   }
   const money = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2);
 
+  // Canadian postal codes as eBay wants them: "A1A 1A1". Anything else comes back blank.
+  function postal(s) {
+    const t = String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return /^[ABCEGHJ-NPRSTVXY]\d[A-Z]\d[A-Z]\d$/.test(t) ? t.slice(0, 3) + " " + t.slice(3) : "";
+  }
+  // Weight and size of the parcel, which calculated shipping (Canada Post rates) needs.
+  // pack: { grams, l, w, h } in grams and centimetres.
+  function packageXml(pack) {
+    if (!pack || !(Number(pack.grams) > 0)) return "";
+    const g = Math.round(Number(pack.grams)), cm = (v) => Math.max(1, Math.round(Number(v) || 1));
+    return "<ShippingPackageDetails><MeasurementUnit>Metric</MeasurementUnit>" +
+      `<PackageDepth unit="cm">${cm(pack.h)}</PackageDepth><PackageLength unit="cm">${cm(pack.l)}</PackageLength><PackageWidth unit="cm">${cm(pack.w)}</PackageWidth>` +
+      "<ShippingPackage>PackageThickEnvelope</ShippingPackage>" +
+      `<WeightMajor unit="kg">${Math.floor(g / 1000)}</WeightMajor><WeightMinor unit="gr">${g % 1000}</WeightMinor>` +
+      "</ShippingPackageDetails>";
+  }
+
   // AddFixedPriceItem / VerifyAddFixedPriceItem on eBay Canada. Listings made this way behave like
   // ones made in Seller Hub, so they can be edited there or in the eBay app afterwards.
   function addItemXml(L, verify) {
@@ -184,11 +201,12 @@ function listingModule() {
       offer +
       "<Country>CA</Country><Currency>CAD</Currency>" +
       tag("Location", clean(L.location)) +
-      tag("PostalCode", clean(L.postalCode).toUpperCase()) +
+      tag("PostalCode", postal(L.postalCode)) +
       "<ListingDuration>GTC</ListingDuration><ListingType>FixedPriceItem</ListingType><Quantity>1</Quantity>" +
       tag("SKU", clean(L.sku).slice(0, 50)) +
       ((L.pictures || []).length ? "<PictureDetails>" + L.pictures.map((u) => tag("PictureURL", u)).join("") + "</PictureDetails>" : "") +
       (specifics ? `<ItemSpecifics>${specifics}</ItemSpecifics>` : "") +
+      packageXml(L.pack) +
       "<SellerProfiles>" +
       `<SellerShippingProfile><ShippingProfileID>${escXml(L.shippingPolicy)}</ShippingProfileID></SellerShippingProfile>` +
       `<SellerReturnProfile><ReturnProfileID>${escXml(L.returnPolicy)}</ReturnProfileID></SellerReturnProfile>` +
@@ -249,7 +267,7 @@ function listingModule() {
 
   return {
     centsOf, gradeOf, dateOf, coinInfo, tidyVariety, varietyOf, defaultExtras, buildTitle, specificsOf,
-    buildDescription, descriptionHtml, addItemXml, tradingResult, categoryFor, storeCategoryFor, DEFAULT_FOOTER,
+    buildDescription, descriptionHtml, addItemXml, postal, tradingResult, categoryFor, storeCategoryFor, DEFAULT_FOOTER,
   };
 }
 

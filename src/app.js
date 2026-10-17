@@ -1990,7 +1990,7 @@
   const API = "https://api.ebay.com";
   const ebay = {
     status: { configured: false, connected: false, user: "" },
-    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
+    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", grams: "120", size: "19 x 13 x 3", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
     cache: { ship: [], pay: [], ret: [], cats: [], store: [], at: 0 },
     busy: false, loading: false, loadMsg: "", photoKey: "",
   };
@@ -2094,6 +2094,11 @@
     }
   }
 
+  // The parcel from eBay settings: weight in grams, size "19 x 13 x 3" in centimetres.
+  function packOf() {
+    const set = ebay.settings, n = String(set.size || "").match(/\d+(?:\.\d+)?/g) || [];
+    return { grams: Number(String(set.grams || "").replace(/[^\d.]/g, "")) || 0, l: Number(n[0]) || 19, w: Number(n[1]) || 13, h: Number(n[2]) || 3 };
+  }
   function listingProblem(L) {
     if (!ebay.status.connected) return "Connect your eBay account first.";
     if (exampleMode()) return "Add the coin's photos first.";
@@ -2101,7 +2106,8 @@
     if (priceOf(L.price) <= 0) return "Add a price.";
     if (!L.cat) return ebay.cache.cats.length ? "Choose a category." : "eBay's categories haven't loaded. Open eBay settings and tap Reload from eBay.";
     if (!L.ship || !ebay.settings.payment || !ebay.settings.returns) return "Choose your shipping, payment and return policies in eBay settings.";
-    if (!ebay.settings.location.trim() && !ebay.settings.postal.trim()) return "Add the item location in eBay settings.";
+    if (!Listing.postal(ebay.settings.postal)) return ebay.settings.postal.trim() ? "The postal code in eBay settings doesn't look right. It should be like N3T 0A1." : "Add your postal code in eBay settings.";
+    if (!(packOf().grams > 0)) return "Add the parcel weight in eBay settings.";
     if (!PHOTO_KEYS.some(([k]) => L.photos[k] && photoAvailable(k))) return "Choose at least one photo.";
     return "";
   }
@@ -2225,7 +2231,7 @@
       const xml = Listing.addItemXml({
         title: L.title, description: L.desc, categoryId: L.cat, price: priceOf(L.price),
         bestOffer: L.bestOffer, autoAccept: L.bestOffer ? priceOf(L.accept) : 0, autoDecline: L.bestOffer ? priceOf(L.decline) : 0,
-        location: ebay.settings.location, postalCode: ebay.settings.postal,
+        location: ebay.settings.location, postalCode: ebay.settings.postal, pack: packOf(),
         sku: [v.service, v.cert].filter(Boolean).join(" "), pictures: imgs.map((x) => x.url), specifics,
         shippingPolicy: L.ship, paymentPolicy: ebay.settings.payment, returnPolicy: ebay.settings.returns, storeCategoryId: L.store,
       }, verify);
@@ -2332,6 +2338,8 @@
     fillSelect("sRet", ebay.cache.ret, ebay.settings.returns, ebay.cache.ret.length ? null : "Not loaded");
     setVal("sLoc", ebay.settings.location);
     setVal("sPostal", ebay.settings.postal);
+    setVal("sGrams", ebay.settings.grams);
+    setVal("sSize", ebay.settings.size);
     setVal("sFoot", ebay.settings.footer);
     $("sRefresh").disabled = ebay.loading || !st.connected;
     $("sNote").textContent = ebay.loadMsg;
@@ -2380,6 +2388,8 @@
     $("sRet").addEventListener("change", (e) => { ebay.settings.returns = e.target.value; saveEbay(); });
     $("sLoc").addEventListener("input", (e) => { ebay.settings.location = e.target.value; saveEbay(); });
     $("sPostal").addEventListener("input", (e) => { ebay.settings.postal = e.target.value; saveEbay(); });
+    $("sGrams").addEventListener("input", (e) => { ebay.settings.grams = e.target.value; saveEbay(); });
+    $("sSize").addEventListener("input", (e) => { ebay.settings.size = e.target.value; saveEbay(); });
     $("sFoot").addEventListener("input", (e) => { ebay.settings.footer = e.target.value; saveEbay(); });
     const onL = (id, ev, fn) => $(id).addEventListener(ev, (e) => { const L = curListing(); fn(L, e.target); if (!L.itemId) { L.note = ""; L.noteKind = ""; } renderListing(); });
     onL("eTitle", "input", (L, t) => { if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, " "); L.title = t.value; L.titleEdited = true; });
