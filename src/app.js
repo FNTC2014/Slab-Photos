@@ -211,15 +211,18 @@
 
   // Several photos at once: work out which is the certificate, put the coins in the order
   // they were picked, then let Claude read the label and confirm which coin is the obverse.
-  async function loadMany(fileList) {
-    const files = [...fileList].filter((f) => !f.type || /^image\//.test(f.type));
+  async function loadMany(fileList, plan) {
+    const all = [...fileList];
+    const keep = all.map((f, i) => i).filter((i) => !all[i].type || /^image\//.test(all[i].type));
+    const files = keep.map((i) => all[i]);
+    if (plan) plan = keep.map((i) => plan[i]);
     if (!files.length) { toast("Those files aren't photos. Choose JPGs or PNGs."); return; }
     if (!batch.active && (files.length > 1 || soloListing.itemId)) newSoloListing();
     if (files.length === 1) { loadPhoto(files[0], !sides.obv.src ? "obv" : !sides.rev.src ? "rev" : "cert"); return; }
     const use = files.slice(0, 3);
     toast(files.length > 3 ? "Using the first three photos." : `Sorting ${use.length} photos…`);
-    const loaded = [];
-    for (const f of use) { const s = await sideFromFile(f); if (s) loaded.push(s); }
+    const loaded = [], lplan = [];
+    for (let i = 0; i < use.length; i++) { const s = await sideFromFile(use[i]); if (s) { loaded.push(s); lplan.push(plan ? plan[i] : null); } }
     if (!loaded.length) { toast("Couldn't open those photos. Try JPGs or PNGs from your gallery."); return; }
     loaded.forEach((s) => { s.busy = true; });
     // show them while sorting
@@ -234,9 +237,33 @@
       results.push(r);
       roles.push(await roleOf(s, r));
     }
-    const frontIdx = roles.findIndex((r) => r.role === "front");
+    const stepAt = (st) => lplan.findIndex((p) => p && p.step === st);
+    const guided = lplan.length > 0 && lplan.every(Boolean);
+    let frontIdx = roles.findIndex((r) => r.role === "front");
     let certIdx = frontIdx;
-    if (certIdx < 0) {
+    let coinIdx = null;
+    const certLike = (i) => (roles[i].role === "label" ? 2 : 0) + (results[i] ? results[i].certScore : -1)
+      - (results[i] && results[i].coin ? 0.5 * (results[i].coin.support || 0) : 0);
+    if (guided && lplan[0].mode === "three") {
+      // taken with the camera's prompts: obverse, reverse, certificate, in that order
+      coinIdx = [stepAt(0), stepAt(1)].filter((i) => i >= 0);
+      certIdx = stepAt(2);
+      frontIdx = -1;
+    } else if (guided && lplan[0].mode === "two") {
+      // holder front (obverse and label) and holder back
+      coinIdx = [stepAt(0), stepAt(1)].filter((i) => i >= 0);
+      certIdx = stepAt(0);
+      frontIdx = certIdx;
+      if (certIdx >= 0 && roles[certIdx].role !== "front") roles[certIdx] = { role: "front", rect: results[certIdx] && results[certIdx].rect };
+    } else if (frontIdx >= 0 && loaded.length >= 3) {
+      // three photos and one shows the label beside the coin (an ICCS holder, say): the photo
+      // that looks most like a certificate on its own is the certificate; the front is the obverse
+      const others = loaded.map((_, i) => i).filter((i) => i !== frontIdx);
+      certIdx = others.reduce((b, i) => (certLike(i) > certLike(b) ? i : b), others[0]);
+      frontIdx = -1;
+      const fi = roles.findIndex((r) => r.role === "front");
+      coinIdx = [fi].concat(others.filter((i) => i !== certIdx));
+    } else if (certIdx < 0) {
       results.forEach((r, i) => {
         const sc = r ? r.certScore : -1;
         if (certIdx < 0 || sc > (results[certIdx] ? results[certIdx].certScore : -1)) certIdx = i;
@@ -244,7 +271,7 @@
       if (loaded.length < 3 && !(results[certIdx] && results[certIdx].certScore > 0.2)) certIdx = -1;
     }
     // the holder front is the obverse; other coin photos follow in the order picked
-    const coinIdx = loaded.map((_, i) => i).filter((i) => i === frontIdx || i !== certIdx)
+    if (!coinIdx) coinIdx = loaded.map((_, i) => i).filter((i) => i === frontIdx || i !== certIdx)
       .sort((p, q) => (q === frontIdx) - (p === frontIdx));
     sides.obv = blankSide(); sides.rev = blankSide();
     if (certIdx >= 0) sides.cert = blankSide();
@@ -256,12 +283,13 @@
     if (certIdx >= 0) {
       const base = loaded[certIdx], s = certIdx === frontIdx ? sharedSide(base) : base;
       s.busy = false;
-      applyRect(s, certIdx === frontIdx ? roles[certIdx].rect : results[certIdx] && results[certIdx].rect, null);
+      applyRect(s, certIdx === frontIdx ? roles[certIdx].rect || (results[certIdx] && results[certIdx].rect) : results[certIdx] && results[certIdx].rect, null);
       sides.cert = s; bump(s);
     }
     setActive("obv");
     $("toast").hidden = true;
-    const both = !!(sides.obv.src && sides.rev.src);
+    // with the camera's prompts the obverse is known, so it isn't second-guessed
+    const both = !!(sides.obv.src && sides.rev.src) && !guided;
     if (sides.cert.src && canRead()) readCert({ checkSides: both });
     else {
       if (isNative && both) checkSidesNative();
@@ -1269,14 +1297,28 @@
     const fresh = () => ({ obv: null, rev: null, cert: null });
     let cur = fresh();
     const close = () => { if (cur.obv || cur.rev || cur.cert) groups.push(cur); cur = fresh(); };
-    for (const x of good) {
+    const frontCert = (g) => !!(g && g.cert && g.cert.role === "front");
+    for (let n = 0; n < good.length; n++) {
+      const x = good[n];
       if (x.role === "front") {
         if (cur.obv && !cur.rev && !cur.cert) { cur.rev = cur.obv; cur.obv = null; } // back was shot first
-        if (cur.obv || cur.cert) close();
-        cur.obv = x; cur.cert = x;
+        if (cur.obv || frontCert(cur)) close();
+        cur.obv = x;
+        if (!cur.cert) cur.cert = x; // a label photo already taken for this coin stays its certificate
       } else if (x.role === "label") {
-        if (cur.cert) close();
-        cur.cert = x;
+        const empty = !cur.obv && !cur.rev && !cur.cert;
+        const prev = groups[groups.length - 1], next = good[n + 1];
+        const t = (y) => (y && y.file && y.file.lastModified) || 0;
+        const last = prev && (prev.rev || prev.obv);
+        // when the next photo starts a coin of its own, or this one was taken closer to the last coin
+        const toPrev = !next || next.role === "front" || t(x) - t(last) <= t(next) - t(x);
+        if (empty && frontCert(prev) && !prev.ownLabel && toPrev) {
+          // obverse (label showing), reverse, then a close-up of the label: it belongs to that coin
+          prev.cert = x; prev.ownLabel = true;
+          continue;
+        }
+        if (cur.cert && !frontCert(cur)) close();
+        cur.cert = x; // replaces the label seen in a holder front
       } else {
         if (cur.obv && cur.rev) close();
         if (!cur.obv) cur.obv = x; else cur.rev = x;
@@ -1291,14 +1333,47 @@
     }));
   }
 
-  async function startBatch(fileList) {
-    const files = [...fileList].filter((f) => !f.type || /^image\//.test(f.type));
-    if (files.length < 4) { loadMany(files); return; }
+  // Photos from the camera's prompts: each one's coin and role are already known.
+  function groupsFromPlan(items) {
+    const byCoin = new Map();
+    for (const x of items) {
+      if (x.bad || !x.plan) continue;
+      if (!byCoin.has(x.plan.coin)) byCoin.set(x.plan.coin, []);
+      byCoin.get(x.plan.coin).push(x);
+    }
+    const groups = [];
+    for (const xs of byCoin.values()) {
+      const at = (st) => xs.find((x) => x.plan.step === st) || null;
+      let g;
+      if (xs[0].plan.mode === "two") {
+        const front = at(0), back = at(1);
+        if (front && front.role !== "front") { front.role = "front"; front.rect = front.rect || (front.res && front.res.rect) || null; }
+        g = { obv: front, rev: back, cert: front, guided: true };
+      } else {
+        const lab = at(2);
+        if (lab) { lab.role = "label"; lab.rect = null; }
+        g = { obv: at(0), rev: at(1), cert: lab, guided: true };
+      }
+      groups.push(g);
+    }
+    return groups.map((g) => ({
+      ...g, coins: [g.obv, g.rev].filter(Boolean), saved: false, read: false, state: null, fields: null, msg: "",
+      problem: !g.cert ? "No certificate photo for this coin" : !g.obv ? "No obverse photo for this coin" : !g.rev ? "No reverse photo for this coin" : "",
+    }));
+  }
+
+  async function startBatch(fileList, plan) {
+    const all = [...fileList];
+    const keepI = all.map((f, i) => i).filter((i) => !all[i].type || /^image\//.test(all[i].type));
+    const files = keepI.map((i) => all[i]);
+    if (plan) plan = keepI.map((i) => plan[i]);
+    if (files.length < 4 && !(plan && new Set(plan.map((p) => p.coin)).size > 1)) { loadMany(files, plan); return; }
     if (readCtl) { readCtl.abort(); readCtl = null; }
     // photos sort in the order they were taken when the phone says so, otherwise as picked
+    // (photos from the camera's prompts are already in order)
     const times = new Set(files.map((f) => f.lastModified));
     const list = files.map((f, i) => ({ f, i }));
-    if (times.size === files.length) list.sort((p, q) => p.f.lastModified - q.f.lastModified);
+    if (!plan && times.size === files.length) list.sort((p, q) => p.f.lastModified - q.f.lastModified);
     Object.assign(batch, { active: true, busy: true, groups: [], idx: -1, stripKey: "", advanceOnClose: false });
     sides.obv = blankSide(); sides.rev = blankSide(); sides.cert = blankSide();
     for (const k in FIELDS) $(FIELDS[k]).value = "";
@@ -1316,10 +1391,10 @@
       const g = graysFor(side);
       const res = await runDetect({ kind: "classify", small: g.small, big: g.big });
       const role = await roleOf(side, res);
-      items.push({ file: list[n].f, res, role: role.role, rect: role.rect || null, thumb: thumbOf(side, res) });
+      items.push({ file: list[n].f, res, role: role.role, rect: role.rect || null, thumb: thumbOf(side, res), plan: plan ? plan[list[n].i] : null });
       side.src = null; side.grays = null;
     }
-    batch.groups = groupItems(items);
+    batch.groups = plan ? groupsFromPlan(items) : groupItems(items);
     batch.progress = "";
     batch.busy = false;
     if (failed) toast(`${failed} photo${failed > 1 ? "s" : ""} couldn't be opened and ${failed > 1 ? "were" : "was"} left out.`);
@@ -1381,7 +1456,7 @@
     setActive("obv");
     disarm();
     $("plate").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    const both = !!(sides.obv.src && sides.rev.src);
+    const both = !!(sides.obv.src && sides.rev.src) && !g.guided;
     if (!g.read && sides.cert.src && canRead()) {
       g.read = true;
       readCert({ checkSides: both && !g.state });
@@ -1523,7 +1598,7 @@
     $("shootInput").value = "";
     if (!f) return;
     const steps = SHOOT_STEPS[shoot.mode], label = `Coin ${shoot.coin + 1} ${steps[shoot.step]}`;
-    shoot.shots.push({ file: f, url: URL.createObjectURL(f), label, coin: shoot.coin, step: shoot.step });
+    shoot.shots.push({ file: f, url: URL.createObjectURL(f), label, coin: shoot.coin, step: shoot.step, mode: shoot.mode });
     keepOriginal(f, label);
     shoot.step++;
     if (shoot.step >= steps.length) { shoot.step = 0; shoot.coin++; toast(`Coin ${shoot.coin} done. Carry on with the next coin, or tap Use these photos.`); }
@@ -1555,9 +1630,11 @@
   });
   $("shootDone").addEventListener("click", () => {
     const files = shoot.shots.map((s) => s.file);
+    const plan = shoot.shots.map((s) => ({ coin: s.coin, step: s.step, mode: s.mode }));
     endShoot();
-    if (files.length > 3) startBatch(files);
-    else if (files.length) loadMany(files);
+    const coins = new Set(plan.map((p) => p.coin)).size;
+    if (coins > 1 || files.length > 3) startBatch(files, plan);
+    else if (files.length) loadMany(files, plan);
   });
 
   /* ---------- eBay listing (phone app only) ----------
@@ -2110,6 +2187,9 @@
       document.fonts.load('500 40px "IBM Plex Sans"'),
     ]).catch(() => null).then(() => { exampleCache.clear(); markDirty(); })
     : Promise.resolve();
+
+  // test hook: only present when a test page asks for it before the app loads
+  if (window.__slabDebug) window.__slabDebug.state = () => ({ sides, batch });
 
   render();
 })();
