@@ -5,7 +5,7 @@ on:
     branches: [coin-refs]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   fetch:
@@ -31,8 +31,12 @@ jobs:
             done
           done < tools/coin-refs.txt | tee refs/log.txt
           cp tools/coin-refs.txt refs/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: coin-refs
-          path: refs
-          retention-days: 3
+      - name: Encrypt for the requester and commit to this branch
+        run: |
+          zip -qr refs.zip refs
+          openssl rand -out key.bin 32
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out refs.zip.enc -pass file:key.bin
+          openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out key.bin.enc
+          mkdir -p out && mv refs.zip.enc key.bin.enc out/
+          git config user.name "github-actions" && git config user.email "actions@github.com"
+          git add out && git commit -qm "Encrypted coin reference photos [skip ci]" && git push -q
