@@ -33,10 +33,40 @@
           <h2 id="h-photos"><span class="step">1</span>Photos</h2>
           <button type="button" class="btn small quiet" id="swapBtn" disabled>Swap obverse and reverse</button>
         </div>
-        <div class="pick-all" id="allPick">
-          <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="13" cy="15" r="9"/><circle cx="35" cy="15" r="9"/><rect x="11" y="29" width="26" height="15" rx="1.5"/></svg>
-          <span class="pick-all-text"><b>Add photos</b><small>Select one coin's obverse, reverse and certificate, or a whole session's photos for a batch. They're sorted for you, and Claude reads each label and checks which side is the obverse.</small></span>
-          <input type="file" id="allInput" accept="image/*" multiple class="tile-input" aria-label="Add photos">
+        <div class="add-row" id="addRow">
+          <button type="button" class="pick-all" id="shootStart">
+            <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 15h9l3-5h12l3 5h9v24H6z"/><circle cx="24" cy="26" r="8"/></svg>
+            <span class="pick-all-text"><b>Take photos</b><small>Guided, one coin at a time</small></span>
+          </button>
+          <div class="pick-all" id="allPick">
+            <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="13" cy="15" r="9"/><circle cx="35" cy="15" r="9"/><rect x="11" y="29" width="26" height="15" rx="1.5"/></svg>
+            <span class="pick-all-text"><b>Choose photos</b><small>One coin, or a whole session</small></span>
+            <input type="file" id="allInput" accept="image/*" multiple class="tile-input" aria-label="Choose photos">
+          </div>
+        </div>
+        <p class="note" id="addNote">Photos are sorted into obverse, reverse and certificate for you, and Claude reads each label and checks which side is the obverse.</p>
+        <div class="shoot" id="shootBar" hidden>
+          <div class="shoot-head">
+            <div class="shoot-title" aria-live="polite"><b id="shootStep">Coin 1 · Obverse</b><small id="shootCount">Take the first photo</small></div>
+            <div class="seg" id="shootModes" role="radiogroup" aria-label="Photos per coin">
+              <input type="radio" name="shootMode" id="modeThree" value="three" checked><label for="modeThree">Coins + label</label>
+              <input type="radio" name="shootMode" id="modeTwo" value="two"><label for="modeTwo">Front + back</label>
+            </div>
+          </div>
+          <div class="shoot-actions">
+            <div class="btn primary shoot-take" id="shootTake">
+              <svg viewBox="0 0 48 48" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M6 15h9l3-5h12l3 5h9v24H6z"/><circle cx="24" cy="26" r="8"/></svg>
+              <span id="shootTakeText">Take photo</span>
+              <input type="file" id="shootInput" accept="image/*" capture="environment" class="tile-input" aria-label="Take photo">
+            </div>
+            <button type="button" class="btn" id="shootUndo" disabled>Retake last</button>
+          </div>
+          <div class="shoot-strip" id="shootStrip" aria-label="Photos taken"></div>
+          <label class="check" id="keepWrap" hidden><input type="checkbox" id="keepChk" checked><span><b>Keep the original photos</b><small>Also saved to Pictures/Slab Plates/Photos</small></span></label>
+          <div class="shoot-foot">
+            <button type="button" class="btn quiet" id="shootCancel">Cancel</button>
+            <button type="button" class="btn ink" id="shootDone" disabled>Use these photos</button>
+          </div>
         </div>
         <div class="tiles">
           <div class="tile">

@@ -1456,6 +1456,107 @@
     toast("Batch ended.");
   });
 
+  /* ---------- taking photos with the phone's camera ----------
+     Each tap opens the camera app at full resolution. The prompts walk through each coin;
+     the photos are then sorted exactly as if they had been chosen from the gallery. */
+  const SHOOT_STEPS = { three: ["Obverse", "Reverse", "Certificate"], two: ["Holder front", "Holder back"] };
+  const shoot = { active: false, shots: [], mode: "three", coin: 0, step: 0, stripKey: "" };
+  try { const m = localStorage.getItem("slabplates.shootMode"); if (SHOOT_STEPS[m]) shoot.mode = m; } catch (e) { /* ignore */ }
+  if (!isNative) shoot.mode = "three"; // telling a holder front from its back needs the phone's text reading
+  function renderShoot() {
+    $("shootBar").hidden = !shoot.active;
+    $("addRow").hidden = shoot.active;
+    $("addNote").hidden = shoot.active;
+    document.querySelector(".tiles").hidden = shoot.active;
+    if (!shoot.active) return;
+    const steps = SHOOT_STEPS[shoot.mode], n = shoot.shots.length;
+    $("shootStep").textContent = `Coin ${shoot.coin + 1} · ${steps[shoot.step]}`;
+    const done = shoot.coin;
+    $("shootCount").textContent = !n ? "Take the first photo" : `${n} photo${n > 1 ? "s" : ""} taken · ${done} coin${done === 1 ? "" : "s"} complete`;
+    $("shootModes").hidden = !isNative;
+    $("modeThree").checked = shoot.mode === "three";
+    $("modeTwo").checked = shoot.mode === "two";
+    $("modeThree").disabled = $("modeTwo").disabled = shoot.step !== 0;
+    $("shootUndo").disabled = !n;
+    $("shootDone").disabled = !n;
+    $("shootDone").textContent = n > 3 ? `Use these ${n} photos` : "Use these photos";
+    $("keepWrap").hidden = !isNative;
+    const key = shoot.shots.map((s) => s.url).join("|");
+    if (key !== shoot.stripKey) {
+      shoot.stripKey = key;
+      const strip = $("shootStrip");
+      strip.textContent = "";
+      shoot.shots.forEach((s) => {
+        const d = document.createElement("div"); d.className = "shoot-shot";
+        const im = document.createElement("img"); im.src = s.url; im.alt = s.label;
+        const t = document.createElement("span"); t.textContent = s.label;
+        d.append(im, t); strip.appendChild(d);
+      });
+      strip.scrollLeft = strip.scrollWidth;
+    }
+  }
+  function endShoot() {
+    shoot.shots.forEach((s) => URL.revokeObjectURL(s.url));
+    Object.assign(shoot, { active: false, shots: [], coin: 0, step: 0, stripKey: "" });
+    renderShoot();
+  }
+  async function keepOriginal(file, label) {
+    if (!isNative || !$("keepChk").checked) return;
+    try {
+      const d = new Date(file.lastModified || Date.now()), p = (v) => String(v).padStart(2, "0");
+      const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}.${p(d.getMinutes())}.${p(d.getSeconds())}`;
+      const data = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(file); });
+      await Vision.saveImage({ data, filename: `${stamp} ${label.toLowerCase()}.jpg`, folder: "Slab Plates/Photos" });
+    } catch (e) { /* the photo is still used for the plate */ }
+  }
+  $("shootStart").addEventListener("click", () => {
+    endShoot();
+    shoot.active = true;
+    renderShoot();
+    $("shootBar").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  $("shootInput").addEventListener("change", () => {
+    const f = $("shootInput").files && $("shootInput").files[0];
+    $("shootInput").value = "";
+    if (!f) return;
+    const steps = SHOOT_STEPS[shoot.mode], label = `Coin ${shoot.coin + 1} ${steps[shoot.step]}`;
+    shoot.shots.push({ file: f, url: URL.createObjectURL(f), label, coin: shoot.coin, step: shoot.step });
+    keepOriginal(f, label);
+    shoot.step++;
+    if (shoot.step >= steps.length) { shoot.step = 0; shoot.coin++; toast(`Coin ${shoot.coin} done. Carry on with the next coin, or tap Use these photos.`); }
+    renderShoot();
+  });
+  $("shootUndo").addEventListener("click", () => {
+    const s = shoot.shots.pop();
+    if (!s) return;
+    URL.revokeObjectURL(s.url);
+    shoot.coin = s.coin; shoot.step = s.step;
+    renderShoot();
+  });
+  document.querySelectorAll('input[name="shootMode"]').forEach((r) => r.addEventListener("change", () => {
+    if (!r.checked || shoot.step !== 0) return;
+    shoot.mode = r.value;
+    try { localStorage.setItem("slabplates.shootMode", shoot.mode); } catch (e) { /* ignore */ }
+    renderShoot();
+  }));
+  let shootArm = 0;
+  $("shootCancel").addEventListener("click", () => {
+    const b = $("shootCancel");
+    if (shoot.shots.length && b.dataset.armed !== "1") {
+      b.dataset.armed = "1"; b.textContent = "Tap again to discard";
+      clearTimeout(shootArm); shootArm = setTimeout(() => { delete b.dataset.armed; b.textContent = "Cancel"; }, 3500);
+      return;
+    }
+    clearTimeout(shootArm); delete b.dataset.armed; b.textContent = "Cancel";
+    endShoot();
+  });
+  $("shootDone").addEventListener("click", () => {
+    const files = shoot.shots.map((s) => s.file);
+    endShoot();
+    if (files.length > 3) startBatch(files);
+    else if (files.length) loadMany(files);
+  });
+
   /* ---------- toast ---------- */
   let toastTimer = 0;
   function toast(text) {
@@ -1549,8 +1650,7 @@
   $("capChk").addEventListener("change", (e) => { look.captions = e.target.checked; saveLook(); markDirty(); });
   window.addEventListener("resize", markDirty);
   if (isNative) {
-    const hint = document.querySelector(".pick-all-text small");
-    if (hint) hint.textContent = "Select one coin's photos, or a whole session for a batch. PCGS and NGC coins need just a front and back. Labels are read on your phone, and the obverse is found from the coin's legend.";
+    $("addNote").textContent = "Photos are sorted for you. PCGS and NGC coins need just a holder front and back. Labels are read on your phone, and the obverse is found from the coin's legend.";
   }
 
   const fontsReady = document.fonts && document.fonts.load
