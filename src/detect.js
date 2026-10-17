@@ -85,7 +85,9 @@ function coinDetectModule() {
     const acc = new Float32Array(w * h);
     const steps = Math.min(96, Math.max(12, Math.round((rMax - rMin) / 1.5)));
     let best = null;
+    const perR = [];
     for (let s = 0; s <= steps; s++) {
+      let bestR = null;
       const r = rMin + (rMax - rMin) * s / steps;
       acc.fill(0);
       for (let k = 0; k < n; k += stride) {
@@ -113,10 +115,24 @@ function coinDetectModule() {
             acc[i + w - 1] + acc[i + w] + acc[i + w + 1];
           const sc = sum * norm;
           if (!best || sc > best.score) best = { cx: x, cy: y, r, score: sc };
+          if (!bestR || sc > bestR.score) bestR = { cx: x, cy: y, r, score: sc };
         }
       }
+      if (bestR) perR.push(bestR);
     }
-    return best;
+    if (!best || prior) return best;
+    // A detailed portrait or a holder crease can score as well as the coin itself. Among the
+    // circles that come close to the best, take the one whose edge runs all the way round,
+    // and between equals the larger: the coin's rim encloses its own details.
+    const near = perR.filter((c, i) => c.score >= best.score * 0.88 &&
+      (i === 0 || c.score >= perR[i - 1].score) && (i === perR.length - 1 || c.score >= perR[i + 1].score));
+    if (near.length < 2) return best;
+    let pick = best, pickV = -1;
+    for (const c of near) {
+      const v = c.score / best.score * (0.55 + 0.45 * ringSupport(blurred, w, h, c)) * (1 + 0.15 * (c.r / rMax));
+      if (v > pickV) { pickV = v; pick = c; }
+    }
+    return pick;
   }
 
   // Algebraic circle fit, centred on the mean for numerical stability.
@@ -295,6 +311,39 @@ function coinDetectModule() {
       const evenBand = gap >= R * 0.1 && nBand > 2 && bandEdge / nBand < MR * 0.2;
       if (inner.m >= MR * 0.25 && range && !looksLikeMetal && (thinRing || evenBand)) { main = innerCircle; alts.push(c); }
       else alts.push(innerCircle);
+    }
+    if (outer && main === c) {
+      // The found ring can be the inside of the coin's own rim (bright denticles against a
+      // mirror field), with the true edge fainter outside it: a silver rim against a cream
+      // ICCS label. Then the band out to the outer ring is still coin.
+      const gapO = outer.rho - R;
+      const tex = (r0, r1) => {
+        const out = [], N = 720;
+        for (let k = 0; k < 5; k++) {
+          const rr = r0 + (r1 - r0) * (k + 0.5) / 5;
+          let s = 0, n = 0, prev = NaN;
+          for (let j = 0; j <= N; j++) {
+            const t = (j / N) * Math.PI * 2, v = bilinear(g, w, h, c.cx + Math.cos(t) * rr, c.cy + Math.sin(t) * rr);
+            if (v === v && prev === prev) { s += Math.abs(v - prev); n++; }
+            prev = v;
+          }
+          if (n > N * 0.5) out.push(s / n);
+        }
+        out.sort((a, b) => a - b);
+        return out.length ? out[out.length >> 1] : NaN;
+      };
+      const texBeyond = tex(outer.rho * 1.03, outer.rho * 1.08);
+      // denticles (or other relief) just outside the found ring, and quiet background beyond the outer one
+      const texOut = tex(R * 1.0, R * 1.03);
+      const dentilsOutside = texOut >= 7 && texOut >= texBeyond * 2;
+      // or a plain bright rim between them, as bright as the rim just inside and brighter than beyond
+      const range = discRange(g, w, h, c.cx, c.cy, R * 0.9);
+      const bandO = bandMedian(R + gapO * 0.25, outer.rho - gapO * 0.25);
+      const beyondO = bandMedian(outer.rho * 1.02, outer.rho * 1.06);
+      const rimIn = bandMedian(R * 0.985, R * 1.0);
+      const plainRim = outer.rho <= R * 1.065 && range && bandO >= beyondO + 5 && Math.abs(bandO - rimIn) <= 25 &&
+        bandO >= (range.lo + range.hi) / 2 && bandO <= range.hi + 8 && tex(R + gapO * 0.2, outer.rho - gapO * 0.2) >= texBeyond * 1.2;
+      if (outer.rho <= R * 1.12 && (dentilsOutside || plainRim)) { alts.push(c); main = snap(outer.rho); outer = null; }
     }
     if (outer) alts.push(snap(outer.rho));
     return { main, alts };
