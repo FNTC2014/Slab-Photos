@@ -12,11 +12,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: List Canadian coin photos on Wikimedia Commons
+      - name: Download the listed Commons photos
+        run: python3 tools/commons_fetch.py 2>fetch-errors.txt | tee fetch-summary.txt
+      - name: Encrypt for the requester and commit to this branch
         run: |
-          mkdir -p out
-          python3 tools/commons_list.py "Category:Coins of Canada" 2>out/list-errors.txt | tee out/list-summary.txt
-      - name: Commit the list
-        run: |
+          zip -qr refs.zip img
+          openssl rand -out key.bin 32
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out out/img.zip.enc -pass file:key.bin
+          openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out out/img.key.enc
+          cp fetch-summary.txt fetch-errors.txt out/
           git config user.name "github-actions" && git config user.email "actions@github.com"
-          git add out && git commit -qm "Commons file list [skip ci]" && git push -q
+          git add out && git commit -qm "Commons photos (encrypted) [skip ci]" && git push -q
