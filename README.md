@@ -2,7 +2,7 @@
 
 An Android app that turns photos of graded coins into square plates: obverse and reverse side by side with the certificate underneath, in true colour.
 
-- Finds and crops each coin and the certificate automatically
+- Finds, crops and straightens each coin and the certificate automatically
 - Reads ICCS and PCGS labels on the phone (no account, no cost, works offline)
 - Batch mode for a whole session of photos
 - Saves plates to **Pictures/Slab Plates**, named to sort by date, denomination, grade, comment and certificate

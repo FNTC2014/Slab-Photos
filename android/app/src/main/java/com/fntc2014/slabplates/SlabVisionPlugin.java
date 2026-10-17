@@ -86,6 +86,11 @@ public class SlabVisionPlugin extends Plugin {
                         JSObject o = new JSObject();
                         o.put("text", line.getText());
                         putBox(o, line.getBoundingBox());
+                        // how the line is turned (degrees, clockwise) and how sure the reader is:
+                        // used to tell upright lettering on a coin's rim from upside-down
+                        float angle = line.getAngle(), conf = line.getConfidence();
+                        if (!Float.isNaN(angle) && !Float.isInfinite(angle)) o.put("angle", (double) angle);
+                        if (!Float.isNaN(conf) && !Float.isInfinite(conf)) o.put("conf", (double) conf);
                         lines.put(o);
                     }
                 }

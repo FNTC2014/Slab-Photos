@@ -56,6 +56,7 @@
   let verSeq = 0, photoSeq = 0;
   const blankSide = () => ({ src: null, w: 0, h: 0, cx: 0, cy: 0, r: 0, rot: 0, rw: 0, rh: 0, base: 0, tilt: 0,
     ver: ++verSeq, photoId: 0, manual: false, found: false, busy: false, rings: [], ringIdx: 0, prior: null,
+    orient: null, rotAuto: true, upFrom: "", textUp: null, textDone: false, textJob: null, legend: 0,
     grays: null, note: "", ed: null, edKey: "", tile: null, tileKey: "" });
   const sides = { obv: blankSide(), rev: blankSide(), cert: blankSide() };
   let active = "obv";
@@ -121,15 +122,79 @@
     });
   }
 
-  function applyCoin(side, res) {
+  function applyCoin(side, res, key) {
     if (res && isFinite(res.r) && res.r > 6) {
       side.rings = [{ cx: res.cx, cy: res.cy, r: res.r }].concat(res.alts || []);
       side.ringIdx = 0;
       Object.assign(side, side.rings[0]);
       side.found = true; side.manual = false; side.note = "";
+      side.orient = res.orient || null;
+      if (side.rotAuto) side.rot = autoRot(side, key);
     } else {
       side.found = false;
       side.note = "Couldn't find the coin's edge in this photo. Drag the ring onto the coin and size it to the rim.";
+    }
+  }
+
+  /* ---------- straightening the coins ----------
+     The holder's straight edges give the exact angle (detect.js). Which way is up: the label
+     when it's in the photo (above the obverse; below the reverse, as Canadian and US coins are
+     struck with coin alignment, so turning the holder over top to bottom shows the reverse
+     upright); otherwise the photo as taken, or for a reverse, how this person usually shoots
+     holder backs. On the phone the legend is read too (lettering across the top faces outward,
+     along the bottom inward) and turns a coin over when it clearly disagrees. A coin someone
+     has turned by hand is left alone. */
+  const wrap180 = (d) => { let v = ((d + 180) % 360 + 360) % 360 - 180; if (v === -180) v = 180; return v; };
+  const QUARTER = { up: 0, right: 90, down: 180, left: 270 };
+  // How this person usually shoots holder backs, learned from the reverses they turned over by
+  // hand when nothing in the photo said which way was up: true when they come out upside down.
+  const HABIT_KEY = "slabplates.reverseHabit";
+  let revHabit = [];
+  try { const h = JSON.parse(localStorage.getItem(HABIT_KEY) || "[]"); if (Array.isArray(h)) revHabit = h.filter((v) => typeof v === "boolean").slice(-5); } catch (e) { /* none yet */ }
+  const revUpsideDown = () => revHabit.length >= 2 && revHabit.slice(-3).filter(Boolean).length >= 2;
+  // Returns the rotation and what decided which way is up.
+  function straightenOf(side, key, useHabit) {
+    const o = side.orient, t = side.textUp;
+    const base = o ? -o.tilt : 0;
+    const cands = [0, 90, 180, 270].map((q) => Math.round(wrap180(base + q) * 10) / 10);
+    let pick = 0, from = "photo";
+    if (o && o.label && QUARTER[o.label] != null) { pick = (((key === "rev" ? 2 : 0) - QUARTER[o.label] / 90) % 4 + 4) % 4; from = "label"; }
+    else if (key === "rev" && useHabit !== false && revUpsideDown()) { pick = 2; from = "habit"; }
+    if (t && isFinite(t.up)) {
+      // The legend only settles up or down. Where its "up" lands for each choice: turn over when
+      // it lands clearly nearer the bottom. A partly read legend can be a quarter turn out, so it
+      // never turns a coin sideways, and it overrules the label only when it reads clearly.
+      const err = (q) => Math.abs(wrap180(t.up + cands[q]));
+      const alt = (pick + 2) % 4, clearly = err(alt) + 40 < err(pick);
+      const trusted = t.strong || (key === "rev" && from !== "label");
+      if (clearly && trusted) { pick = alt; from = "text"; }
+      else if (!clearly && err(pick) < 50 && from !== "label") from = "text";
+    }
+    return { rot: cands[pick], from };
+  }
+  function autoRot(side, key) {
+    const s = straightenOf(side, key);
+    side.upFrom = s.from;
+    return s.rot;
+  }
+  // When a reverse is saved, note whether it ended up turned over from the photo as taken, but
+  // only where the photo itself couldn't say (no label in view, nothing readable).
+  function learnHabit() {
+    const s = sides.rev;
+    if (!s.src || !s.found) return;
+    const plain = straightenOf(s, "rev", false);
+    if (plain.from !== "photo") return;
+    const d = Math.abs(wrap180(s.rot - plain.rot));
+    if (d > 135) revHabit.push(true); else if (d < 45) revHabit.push(false); else return;
+    revHabit = revHabit.slice(-5);
+    try { localStorage.setItem(HABIT_KEY, JSON.stringify(revHabit)); } catch (e) { /* not kept */ }
+  }
+  function restraighten() {
+    for (const key of ["obv", "rev"]) {
+      const s = sides[key];
+      if (!s.src || !s.rotAuto || !s.found) continue;
+      const r = autoRot(s, key);
+      if (r !== s.rot) { s.rot = r; bump(s); }
     }
   }
   function applyRect(side, res, prior) {
@@ -154,11 +219,12 @@
     const g = graysFor(side);
     const res = await runDetect({ kind: isCoin(key) ? "coin" : "rect", small: g.small, big: g.big, prior: prior || null });
     if (side.photoId !== pid) return;
-    if (isCoin(key)) applyCoin(side, res); else applyRect(side, res, prior);
+    if (isCoin(key)) applyCoin(side, res, key); else applyRect(side, res, prior);
     if (!isCoin(key) && isNative && !prior) await refineCertByText(side);
     if (side.photoId !== pid) return;
     side.busy = false;
     bump(side);
+    if (isCoin(key) && isNative) textPass(false);
   }
 
   /* ---------- loading photos ---------- */
@@ -277,7 +343,7 @@
     if (certIdx >= 0) sides.cert = blankSide();
     coinIdx.slice(0, 2).forEach((i, n) => {
       const s = loaded[i]; s.busy = false;
-      applyCoin(s, results[i] && results[i].coin);
+      applyCoin(s, results[i] && results[i].coin, n === 0 ? "obv" : "rev");
       sides[n === 0 ? "obv" : "rev"] = s; bump(s);
     });
     if (certIdx >= 0) {
@@ -292,7 +358,7 @@
     const both = !!(sides.obv.src && sides.rev.src) && !guided;
     if (sides.cert.src && canRead()) readCert({ checkSides: both });
     else {
-      if (isNative && both) checkSidesNative();
+      if (isNative) textPass(both);
       toast(certIdx >= 0 ? "Sorted. Check obverse and reverse, and tap Swap if they're the wrong way round." : "Couldn't tell which photo is the certificate. Check the tiles.");
     }
   }
@@ -646,7 +712,8 @@
     else if (e.key === "-" || e.key === "_") scale(1 / 1.01);
     else if (e.key === "[" || e.key === "]") {
       const dir = e.key === "[" ? -1 : 1;
-      if (isCoin(active)) side.rot = wrapDeg(side.rot + dir); else side.tilt = clamp(Math.round((side.tilt + dir * 0.1) * 10) / 10, -45, 45);
+      if (isCoin(active)) { side.rot = Math.round(wrap180(side.rot + dir) * 10) / 10; side.rotAuto = false; }
+      else side.tilt = clamp(Math.round((side.tilt + dir * 0.1) * 10) / 10, -45, 45);
     } else return;
     e.preventDefault(); side.manual = true; bump(side);
   });
@@ -725,8 +792,14 @@
     const multi = coin && has && side.rings.length > 1 && !side.busy;
     $("ringBtn").hidden = !multi;
     if (multi) $("ringBtn").textContent = `Other ring (${side.ringIdx + 1} of ${side.rings.length})`;
+    let straight = "";
+    if (coin && has && side.found && side.rotAuto && !side.busy) {
+      const why = { text: "the lettering", label: "where the label is", habit: "how you usually shoot holder backs" }[side.upFrom];
+      if (side.orient) straight = "Straightened to the holder's edges. ";
+      if (why && Math.abs(side.rot) > 45) straight += `Turned the right way up going by ${why}. `;
+    }
     const hint = coin
-      ? "Drag the ring to move it. Pinch or use Size to sit it on the coin's outer edge."
+      ? straight + "Drag the ring to move it. Pinch or use Size to sit it on the coin's outer edge."
       : has ? `Drag inside to move, drag a corner to resize. ${Math.round(side.rw)} × ${Math.round(side.rh)} px crop.` : "Drag inside to move, drag a corner to resize.";
     $("cropNote").textContent = side.note || hint;
     $("cropNote").className = side.note ? "note warn" : "note";
@@ -748,7 +821,8 @@
   async function ocrLines(canvas, maxDim) {
     const c = scaledCanvas(canvas, canvas.width, canvas.height, maxDim), k = canvas.width / c.width;
     const res = await Vision.readText({ image: c.toDataURL("image/jpeg", 0.92) });
-    return ((res && res.lines) || []).map((l) => ({ text: String(l.text || ""), x: (l.x || 0) * k, y: (l.y || 0) * k, w: (l.w || 0) * k, h: (l.h || 0) * k }));
+    return ((res && res.lines) || []).map((l) => ({ text: String(l.text || ""), x: (l.x || 0) * k, y: (l.y || 0) * k, w: (l.w || 0) * k, h: (l.h || 0) * k,
+      angle: typeof l.angle === "number" ? l.angle : undefined }));
   }
   async function barcodeBoxes(canvas, maxDim) {
     const c = scaledCanvas(canvas, canvas.width, canvas.height, maxDim), k = canvas.width / c.width;
@@ -839,7 +913,7 @@
     } finally {
       updateReadUI();
     }
-    if (opts && opts.checkSides) await checkSidesNative();
+    await textPass(!!(opts && opts.checkSides));
   }
 
   // Which coin photo is the obverse? Unroll the legend around the rim into straight rows of text,
@@ -879,24 +953,76 @@
     x.putImageData(img, 0, 0);
     return out;
   }
-  async function legendScore(side) {
-    const lines = await ocrLines(legendStrip(side), 1200);
+  // Where each strip row's text sits on the coin: degrees clockwise from the top of the crop.
+  // Rows 0-2 read clockwise with letter tops outward, rows 3-5 the other way (see legendStrip).
+  function stripArc(line, H, gap, rm, seg, step) {
+    const row = Math.floor((line.y + line.h / 2) / (H + gap));
+    if (row < 0 || row > 5) return null;
+    const flip = row >= 3, k = row % 3;
+    const t0 = flip ? Math.PI / 2 + seg / 2 + k * step : -Math.PI / 2 - seg / 2 + k * step;
+    const at = (u) => (((flip ? t0 - u / rm : t0 + u / rm) * 180) / Math.PI + 90);
+    const a = at(line.x), b = at(line.x + line.w);
+    return { from: Math.min(a, b), to: Math.max(a, b), outward: !flip };
+  }
+  // Which way is up, from where the legend sits: lettering whose tops face the rim runs across
+  // the top of a coin, lettering whose tops face the centre runs along the bottom. Returns the
+  // design's up in degrees clockwise from the top of the crop, and how sure that is, or null.
+  function legendUp(lines) {
+    const D = 800, R = D / 2, r0 = R * 0.66, r1 = R * 0.99, H = Math.round(r1 - r0), rm = (r0 + r1) / 2;
+    const seg = (150 * Math.PI) / 180, step = (120 * Math.PI) / 180, gap = 16;
+    const outB = new Uint8Array(180), inB = new Uint8Array(180);
+    for (const l of lines) {
+      const chars = String(l.text || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      // denticles and scratches can read as rows of I, L or 1
+      if (chars.length < 3 || new Set(chars).size < 2 || /^[IL1]+$/.test(chars)) continue;
+      const arc = stripArc(l, H, gap, rm, seg, step);
+      if (!arc) continue;
+      // a line the reader reports upside down belongs to the other kind of row
+      const outward = typeof l.angle === "number" && Math.abs(wrap180(l.angle)) > 120 ? !arc.outward : arc.outward;
+      const bins = outward ? outB : inB;
+      for (let d = arc.from; d <= arc.to; d += 2) bins[(((Math.floor(d / 2)) % 180) + 180) % 180] = 1;
+    }
+    let vx = 0, vy = 0, n = 0;
+    for (let i = 0; i < 180; i++) {
+      const v = outB[i] - inB[i], a = ((i * 2 + 1) * Math.PI) / 180;
+      n += outB[i] + inB[i];
+      vx += v * Math.cos(a); vy += v * Math.sin(a);
+    }
+    const covered = n * 2, conf = n ? Math.hypot(vx, vy) / n : 0;
+    if (covered < 12 || conf < 0.25) return null;
+    return { up: Math.round((Math.atan2(vy, vx) * 180) / Math.PI), strong: covered >= 24 && conf >= 0.5, covered, conf: Math.round(conf * 100) / 100 };
+  }
+  async function legendRead(side) {
+    const rot = side.rot, lines = await ocrLines(legendStrip(side), 1200);
     const text = " " + lines.map((l) => l.text).join(" ").toUpperCase().replace(/[^A-Z]+/g, " ") + " ";
     const has = (w) => text.includes(" " + w + " ") || (w.length >= 6 && text.includes(w));
     const dg = /\bD\s?G\b/.test(text) ? 1 : 0;
-    return OBV_WORDS.filter(has).length + dg - REV_WORDS.filter(has).length;
+    const up = legendUp(lines);
+    // kept relative to the photo itself, so it still holds after the crop is turned
+    if (up) up.up = Math.round(wrap180(up.up - rot) * 10) / 10;
+    return { score: OBV_WORDS.filter(has).length + dg - REV_WORDS.filter(has).length, up };
   }
-  async function checkSidesNative() {
+  // Read both coins' legends once each (phone only): to straighten them and, when asked,
+  // to tell which is the obverse.
+  function readLegendOnce(s) {
+    if (!s.textJob) {
+      s.textJob = s.textDone ? Promise.resolve() : legendRead(s)
+        .then((r) => { s.textUp = r.up; s.legend = r.score; })
+        .catch(() => { /* unreadable: straightened from the holder alone */ })
+        .then(() => { s.textDone = true; });
+    }
+    return s.textJob;
+  }
+  async function textPass(checkSides) {
     const a = sides.obv, b = sides.rev;
-    if (!isNative || !a.src || !b.src) return;
-    try {
-      const sa = await legendScore(a), sb = await legendScore(b);
-      if (sides.obv !== a || sides.rev !== b) return;
-      if (sb > sa) {
-        sides.obv = b; sides.rev = a; bump(a); bump(b);
-        toast("Obverse and reverse were the wrong way round, so they've been swapped.");
-      }
-    } catch (e) { /* leave the order as picked */ }
+    if (!isNative) return;
+    for (const s of [a, b]) if (s.src && s.found && !s.busy) await readLegendOnce(s);
+    if (sides.obv !== a || sides.rev !== b) return;
+    if (checkSides && a.src && b.src && a.textDone && b.textDone && b.legend > a.legend) {
+      sides.obv = b; sides.rev = a; bump(a); bump(b);
+      toast("Obverse and reverse were the wrong way round, so they've been swapped.");
+    }
+    restraighten();
   }
 
   /* ---------- reading the certificate ---------- */
@@ -1018,7 +1144,7 @@
     let sidesNote = "";
     if (coinCtx && sides.obv === coinCtx.obv && sides.rev === coinCtx.rev) {
       const pick = Number(d.obverse_image);
-      if (pick === coinCtx.b) { sides.obv = coinCtx.rev; sides.rev = coinCtx.obv; bump(sides.obv); bump(sides.rev); sidesNote = " Obverse and reverse were the wrong way round, so they've been swapped."; }
+      if (pick === coinCtx.b) { sides.obv = coinCtx.rev; sides.rev = coinCtx.obv; bump(sides.obv); bump(sides.rev); restraighten(); sidesNote = " Obverse and reverse were the wrong way round, so they've been swapped."; }
       else if (pick === coinCtx.a) sidesNote = " Obverse and reverse are in place.";
     }
     if (!filled) readMsg("Couldn't make out the label. Try a sharper photo, or type the details in." + sidesNote, "warn");
@@ -1198,6 +1324,7 @@
   async function savePlate() {
     if (saving) return "";
     if (exampleMode()) { toast("Add your photos first. The plate above is an example."); return ""; }
+    learnHabit();
     const btn = $("saveBtn");
     btn.disabled = true; saving = true;
     try {
@@ -1269,7 +1396,8 @@
      Only the current coin's three photos are held at full size; the rest of the session
      is kept as the picked files plus what was found in them, so a phone doesn't run out of memory. */
   const batch = { active: false, busy: false, groups: [], idx: -1, progress: "", stripKey: "", advanceOnClose: false };
-  const PARAMS = ["cx", "cy", "r", "rot", "rw", "rh", "base", "tilt", "rings", "ringIdx", "manual", "found", "note", "prior"];
+  const PARAMS = ["cx", "cy", "r", "rot", "rw", "rh", "base", "tilt", "rings", "ringIdx", "manual", "found", "note", "prior",
+    "orient", "rotAuto", "upFrom", "textUp", "textDone", "legend"];
 
   function thumbOf(side, res) {
     const S = 96, c = document.createElement("canvas");
@@ -1447,7 +1575,7 @@
       if (!seen) opened.set(it.file, side);
       if (it.params) Object.assign(side, it.params);
       else if (key === "cert") applyRect(side, it.rect || (it.res && it.res.rect), null);
-      else applyCoin(side, it.res && it.res.coin);
+      else applyCoin(side, it.res && it.res.coin, key);
       sides[key] = side;
       bump(side);
     }
@@ -1460,9 +1588,10 @@
     if (!g.read && sides.cert.src && canRead()) {
       g.read = true;
       readCert({ checkSides: both && !g.state });
-    } else if (!g.read && isNative && both) {
-      g.read = true;
-      checkSidesNative();
+    } else if (isNative) {
+      const check = !g.read && both;
+      if (check) g.read = true;
+      textPass(check);
     }
   }
 
@@ -2105,6 +2234,7 @@
   $("swapBtn").addEventListener("click", () => {
     const t = sides.obv; sides.obv = sides.rev; sides.rev = t;
     bump(sides.obv); bump(sides.rev);
+    restraighten();
   });
   document.querySelectorAll('input[name="side"]').forEach((r) => r.addEventListener("change", () => { if (r.checked) setActive(r.value); }));
   $("sizeRange").addEventListener("input", (e) => {
@@ -2114,14 +2244,15 @@
   });
   $("rotRange").addEventListener("input", (e) => {
     const side = sides[active]; if (!side.src) return;
-    if (isCoin(active)) side.rot = wrapDeg(Number(e.target.value));
+    if (isCoin(active)) { side.rot = wrapDeg(Number(e.target.value)); side.rotAuto = false; }
     else { side.tilt = clamp(Number(e.target.value), -45, 45); side.manual = true; }
     bump(side);
   });
   const turn = (dir) => {
     const s = sides[active];
     if (!s.src) return;
-    if (isCoin(active)) s.rot = wrapDeg(s.rot + dir * 90);
+    // a quarter turn keeps the straightening's fine angle
+    if (isCoin(active)) { s.rot = Math.round(wrap180(s.rot + dir * 90) * 10) / 10; s.rotAuto = false; }
     else { s.base = ((s.base - dir * 90) % 360 + 360) % 360; const t = s.rw; s.rw = s.rh; s.rh = t; }
     bump(s);
   };

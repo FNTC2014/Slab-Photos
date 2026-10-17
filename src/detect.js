@@ -378,10 +378,215 @@ function coinDetectModule() {
     return Math.max(c.r, Math.min(r, c.r * 1.03));
   }
 
+  /* ---------- straightening: the holder's edges, and which side its label is on ---------- */
+
+  const wrap90 = (d) => { let v = ((d + 45) % 90 + 90) % 90 - 45; return v; };
+
+  // How far the holder is turned, from the long straight edges around the coin: the holder's
+  // own outline, the insert, the label's edges and its printed lines all run square to it.
+  // Gives the tilt modulo 90° (clockwise positive), or null when nothing straight and long
+  // enough sits near the coin (a loose coin on a plain cloth, say).
+  function holderTilt(g, w, h, c) {
+    const bl = boxBlur(boxBlur(g, w, h, 1), w, h, 1);
+    const { gx, gy, mag } = sobel(bl, w, h);
+    const R = c.r, inner = R * 1.07, reach = R * 5.5;
+    const thr = Math.max(percentile(mag, 0.9), 10);
+    const DEG = 180 / Math.PI;
+    let n = 0;
+    const X = new Float32Array(w * h / 5 | 0), Y = new Float32Array(X.length), T = new Float32Array(X.length), A = new Uint8Array(X.length), F = new Uint8Array(X.length);
+    const hist = new Float32Array(360);
+    for (let y = 2; y < h - 2 && n < X.length; y++) {
+      for (let x = 2, i = y * w + 2; x < w - 2; x++, i++) {
+        const m = mag[i];
+        if (m < thr) continue;
+        const dx = x - c.cx, dy = y - c.cy, d2 = dx * dx + dy * dy;
+        if (d2 < inner * inner) continue;
+        // the edge's normal, folded so both of a rectangle's edge directions land together
+        const a = ((Math.atan2(gy[i], gx[i]) * DEG) % 180 + 180) % 180;
+        const t = wrap90(a);
+        // A: edges running up and down (normal along t); otherwise across (normal along t + 90°)
+        // F: far from the coin, only used to spot a ruled background
+        X[n] = x; Y[n] = y; T[n] = t; A[n] = Math.round((a - t) / 90) % 2 === 0 ? 1 : 0; F[n] = d2 > reach * reach ? 1 : 0; n++;
+        if (n >= X.length) break;
+        if (d2 <= reach * reach) hist[Math.min(359, Math.floor((t + 45) * 4))] += 1;
+      }
+    }
+    if (n < 40) return null;
+    // smooth over about a degree, round the circle
+    const sm = new Float32Array(360);
+    for (let i = 0; i < 360; i++) { let s = 0; for (let k = -4; k <= 4; k++) s += hist[(i + k + 360) % 360] * (5 - Math.abs(k)); sm[i] = s; }
+    const peaks = [];
+    for (let i = 0; i < 360; i++) {
+      const v = sm[i];
+      if (v <= 0 || v < sm[(i + 359) % 360] || v < sm[(i + 1) % 360]) continue;
+      peaks.push({ t: i / 4 - 45 + 0.125, v });
+    }
+    peaks.sort((p, q) => q.v - p.v);
+    const top = [];
+    for (const p of peaks) { if (top.every((q) => Math.abs(wrap90(q.t - p.t)) >= 3)) top.push(p); if (top.length >= 3) break; }
+
+    const diag = Math.ceil(Math.hypot(w, h)) + 4;
+    const cntA = new Int32Array(2 * diag), cntB = new Int32Array(2 * diag);
+    const near = (t0, span, all) => { const idx = []; for (let k = 0; k < n; k++) if ((all || !F[k]) && Math.abs(wrap90(T[k] - t0)) <= span) idx.push(k); return idx; };
+    const project = (idx, t) => {
+      const r = t / DEG, co = Math.cos(r), si = Math.sin(r);
+      cntA.fill(0); cntB.fill(0);
+      for (const k of idx) {
+        if (A[k]) cntA[Math.round(X[k] * co + Y[k] * si) + diag]++;
+        else cntB[Math.round(-X[k] * si + Y[k] * co) + diag]++;
+      }
+    };
+    const sharp = (idx, t) => {
+      project(idx, t);
+      let s = 0;
+      for (let i = 0; i < cntA.length; i++) s += cntA[i] * cntA[i] + cntB[i] * cntB[i];
+      return s;
+    };
+    // the straight runs at angle t: their length (gaps left out) and distance from the coin
+    const linesAt = (idx, t) => {
+      project(idx, t);
+      const r = t / DEG, co = Math.cos(r), si = Math.sin(r);
+      const out = [];
+      for (const [cnt, fam] of [[cntA, 1], [cntB, 0]]) {
+        const c3 = (i) => cnt[i - 1] + cnt[i] + cnt[i + 1];
+        const rc = fam ? c.cx * co + c.cy * si : -c.cx * si + c.cy * co;
+        const ac = fam ? -c.cx * si + c.cy * co : c.cx * co + c.cy * si;
+        for (let i = 2; i < cnt.length - 2; i++) {
+          const v = c3(i);
+          if (v < R * 0.35 || v < c3(i - 1) || v <= c3(i + 1)) continue;
+          // how much of the line is actually there, in 3 px steps, and on which side of the coin
+          const cells = new Set();
+          let before = 0, after = 0;
+          for (const k of idx) {
+            if (A[k] !== fam) continue;
+            const rho = fam ? X[k] * co + Y[k] * si : -X[k] * si + Y[k] * co;
+            if (Math.abs(rho + diag - i) > 1.5) continue;
+            const along = fam ? -X[k] * si + Y[k] * co : X[k] * co + Y[k] * si;
+            const cell = Math.floor(along / 3);
+            if (cells.has(cell)) continue;
+            cells.add(cell);
+            if (along < ac) before += 3; else after += 3;
+          }
+          const len = cells.size * 3;
+          if (len >= R * 0.3) out.push({ fam, len, dist: Math.abs(i - diag - rc), both: Math.min(before, after) });
+        }
+      }
+      return out;
+    };
+    // A background with its own ruled lines (a cutting mat, squared paper, floorboards) shows
+    // many long lines at even spacing, across the photo. Those don't say where the holder is.
+    const ruled = (t) => {
+      project(near(t, 1.5, true), t);
+      for (const cnt of [cntA, cntB]) {
+        const c3 = (i) => cnt[i - 1] + cnt[i] + cnt[i + 1], pos = [];
+        for (let i = 2; i < cnt.length - 2; i++) {
+          const v = c3(i);
+          if (v < R || v < c3(i - 1) || v <= c3(i + 1)) continue;
+          if (pos.length && i - pos[pos.length - 1] < 5) continue;
+          pos.push(i);
+        }
+        if (pos.length < 7 || pos[pos.length - 1] - pos[0] < R * 3) continue;
+        const gaps = pos.slice(1).map((q, i) => q - pos[i]), med = gaps.slice().sort((a, b) => a - b)[gaps.length >> 1];
+        if (med < R * 0.15) continue;
+        const even = gaps.filter((gp) => gp <= med * 3.2 && Math.abs(gp / med - Math.max(1, Math.round(gp / med))) <= 0.12).length;
+        if (even >= gaps.length * 0.75) return true;
+      }
+      return false;
+    };
+    let best = null, second = null, ruledBest = null;
+    for (const p of top) {
+      const idx = near(p.t, 2.5);
+      if (idx.length < 30) continue;
+      let bt = p.t, bs = -1;
+      for (let t = p.t - 1.2; t <= p.t + 1.2001; t += 0.1) { const s = sharp(idx, t); if (s > bs) { bs = s; bt = t; } }
+      for (let t = bt - 0.08; t <= bt + 0.0801; t += 0.02) { const s = sharp(idx, t); if (s > bs) { bs = s; bt = t; } }
+      const lines = linesAt(idx, bt);
+      // nearer lines count for more: a holder sits right around its coin, a table edge doesn't
+      const prox = (d) => 1 / (1 + Math.max(0, d - R * 1.3) / (R * 1.5));
+      let sup = 0, longA = 0, longB = 0, through = 0;
+      for (const l of lines) {
+        // a line that runs behind the coin (on both sides of it) is background: a holder's
+        // edges all go round its coin, never across it
+        if (l.dist < R * 0.95) { if (l.both >= R * 0.3) through += l.len; continue; }
+        sup += l.len * prox(l.dist);
+        if (l.fam) longA = Math.max(longA, l.len * prox(l.dist)); else longB = Math.max(longB, l.len * prox(l.dist));
+      }
+      // a rectangle shows edges both ways; a single family has to be long and close
+      const ok = (longA >= R * 0.5 && longB >= R * 0.5) || Math.max(longA, longB) >= R * 1.3;
+      const cand = { tilt: Math.round(wrap90(bt) * 10) / 10, support: sup / R, ok };
+      if (!ok) continue;
+      if (through >= R || ruled(bt)) { if (!ruledBest || cand.support > ruledBest.support) ruledBest = cand; continue; }
+      if (!best || cand.support > best.support) { second = best; best = cand; } else if (!second || cand.support > second.support) second = cand;
+    }
+    // only a ruled background: it may or may not line up with the holder (a label can say)
+    if (!best) return ruledBest ? { tilt: ruledBest.tilt, support: Math.round(ruledBest.support * 100) / 100, ruled: true } : null;
+    // two different straight-edged things at different angles, near equally strong: don't guess
+    if (second && second.support > best.support * 0.7) return null;
+    return { tilt: best.tilt, support: Math.round(best.support * 100) / 100 };
+  }
+
+  // Which side of the coin the label is on, in the holder's own frame (after taking out the
+  // tilt): "up", "right", "down" or "left". The label is a bright rectangle beside the coin,
+  // square to the holder and at least about as wide as the coin. rect and c in the same px.
+  function labelSide(rect, c, tilt) {
+    if (!rect || !(rect.rw > 0)) return null;
+    const turn = wrap90(rect.rot - tilt);
+    if (Math.abs(turn) > 4) return null;
+    const t = tilt * Math.PI / 180, co = Math.cos(t), si = Math.sin(t);
+    const dx = rect.cx - c.cx, dy = rect.cy - c.cy;
+    const u = dx * co + dy * si, v = -dx * si + dy * co;
+    // the label's half sizes along the holder's axes
+    const q = ((Math.round((rect.rot - tilt - turn) / 90) % 2) + 2) % 2;
+    const hu = (q ? rect.rh : rect.rw) / 2, hv = (q ? rect.rw : rect.rh) / 2;
+    // clear of the coin, but close: even a dime's label starts within about three radii
+    const R = c.r, gap = R * 0.85, far = R * 4;
+    if (hu * 2 * hv * 2 < R * R * 0.6) return null;
+    const sides = [];
+    if (v + hv < -gap && v + hv > -far && Math.abs(u) < hu + R * 0.4 && hu * 2 >= R * 1.6) sides.push("up");
+    if (v - hv > gap && v - hv < far && Math.abs(u) < hu + R * 0.4 && hu * 2 >= R * 1.6) sides.push("down");
+    if (u + hu < -gap && u + hu > -far && Math.abs(v) < hv + R * 0.4 && hv * 2 >= R * 1.6) sides.push("left");
+    if (u - hu > gap && u - hu < far && Math.abs(v) < hv + R * 0.4 && hv * 2 >= R * 1.6) sides.push("right");
+    return sides.length === 1 ? sides[0] : null;
+  }
+
+  // The holder's tilt and label side for a found coin c (full-res px). rect: the label found
+  // in the same photo (full-res px), or undefined to look for one here.
+  function holderOrient(job, c, rect) {
+    // half the detection size is plenty for long edges, and four times quicker
+    const b = job.big, f = b.w * b.h > 900000 ? 2 : 1, w = Math.floor(b.w / f), h = Math.floor(b.h / f);
+    let g = b.g;
+    if (f === 2) {
+      g = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = 2 * y * b.w + 2 * x;
+        g[y * w + x] = (b.g[i] + b.g[i + 1] + b.g[i + b.w] + b.g[i + b.w + 1]) / 4;
+      }
+    }
+    const k = b.scale / f;
+    const ht = holderTilt(g, w, h, { cx: c.cx * k, cy: c.cy * k, r: c.r * k });
+    if (rect === undefined) { try { rect = detectRect(job); } catch (e) { rect = null; } }
+    // A label beside the coin is the surest sign of the holder: it sets the angle, and the
+    // edges refine it when they agree. A label cut off by the edge of the photo still shows
+    // which side it's on, but its own angle can't be trusted.
+    const label = rect ? labelSide(rect, c, wrap90(rect.rot)) : null;
+    if (label) {
+      const W = b.w / b.scale, H = b.h / b.scale, t = rect.rot * Math.PI / 180;
+      const ex = Math.abs(Math.cos(t)) * rect.rw / 2 + Math.abs(Math.sin(t)) * rect.rh / 2;
+      const ey = Math.abs(Math.sin(t)) * rect.rw / 2 + Math.abs(Math.cos(t)) * rect.rh / 2, m = Math.min(W, H) * 0.01;
+      const cut = rect.cx - ex < m || rect.cy - ey < m || rect.cx + ex > W - m || rect.cy + ey > H - m;
+      const d = ht ? Math.abs(wrap90(ht.tilt - rect.rot)) : 99;
+      if (ht && !ht.ruled && d <= (cut ? 4 : 1)) return { tilt: ht.tilt, label: labelSide(rect, c, ht.tilt) || label, support: ht.support };
+      if (!cut) return { tilt: Math.round(wrap90(rect.rot) * 10) / 10, label, support: 0 };
+    }
+    if (!ht || ht.ruled) return null;
+    return { tilt: ht.tilt, label: rect ? labelSide(rect, c, ht.tilt) : null, support: ht.support };
+  }
+
   // job.small / job.big: {g, w, h, scale} where scale = detection px per full-res px.
   // job.prior (optional): {cx, cy, r} in full-res px.
-  // Returns {cx, cy, r, score, alts:[{cx, cy, r}]} in full-res px, or null.
-  function detect(job) {
+  // Returns {cx, cy, r, score, alts:[{cx, cy, r}], orient} in full-res px, or null.
+  // orient: {tilt, label, support} from the holder around the coin, or null.
+  function detect(job, rect) {
     const s = job.small, b = job.big;
     const prior = job.prior ? { cx: job.prior.cx * s.scale, cy: job.prior.cy * s.scale, r: job.prior.r * s.scale } : null;
     const c = findCircle(s.g, s.w, s.h, prior);
@@ -392,7 +597,10 @@ function coinDetectModule() {
     const picked = pickRing(bg, b.w, b.h, rc);
     // Sit the crop just outside the outermost edge of the rim, never on it.
     const up = (q) => { const r = outerEdge(b.g, b.w, b.h, q); return { cx: q.cx / b.scale, cy: q.cy / b.scale, r: r / b.scale * 1.002 }; };
-    return { ...up(picked.main), score: rc.score, alts: picked.alts.map(up), support: ringSupport(bg, b.w, b.h, rc) };
+    const main = up(picked.main);
+    let orient = null;
+    if (job.orient !== false) { try { orient = holderOrient(job, main, rect); } catch (e) { orient = null; } }
+    return { ...main, score: rc.score, alts: picked.alts.map(up), support: ringSupport(bg, b.w, b.h, rc), orient };
   }
 
   /* ---------- certificate (label) rectangle ---------- */
@@ -657,14 +865,14 @@ function coinDetectModule() {
   // Is this photo a coin or a certificate? Runs both finders and reports how well each fits.
   function classify(job) {
     let coin = null, rect = null;
-    try { coin = detect(job); } catch (e) { coin = null; }
     try { rect = detectRect(job); } catch (e) { rect = null; }
+    try { coin = detect(job, rect); } catch (e) { coin = null; }
     return { coin, rect, certScore: (rect ? rect.support : 0) - (coin ? coin.support : 0) };
   }
 
   function run(job) { return job.kind === "rect" ? detectRect(job) : job.kind === "classify" ? classify(job) : detect(job); }
 
-  return { run, detect, detectRect, classify, findCircle, refineCircle, fitCircle, pickRing, snapRect };
+  return { run, detect, detectRect, classify, findCircle, refineCircle, fitCircle, pickRing, snapRect, holderTilt, labelSide, holderOrient };
 }
 
 if (typeof module !== "undefined") module.exports = coinDetectModule;
