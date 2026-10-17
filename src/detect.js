@@ -1,6 +1,7 @@
 // Coin edge detection on grayscale arrays. Self-contained so it can run in a Worker.
 function coinDetectModule() {
   "use strict";
+  const NEAR = 0.72;
 
   function boxBlur(src, w, h, rad) {
     const tmp = new Float32Array(w * h), out = new Float32Array(w * h), k = 2 * rad + 1;
@@ -124,12 +125,12 @@ function coinDetectModule() {
     // A detailed portrait or a holder crease can score as well as the coin itself. Among the
     // circles that come close to the best, take the one whose edge runs all the way round,
     // and between equals the larger: the coin's rim encloses its own details.
-    const near = perR.filter((c, i) => c.score >= best.score * 0.88 &&
+    const near = perR.filter((c, i) => c.score >= best.score * NEAR &&
       (i === 0 || c.score >= perR[i - 1].score) && (i === perR.length - 1 || c.score >= perR[i + 1].score));
     if (near.length < 2) return best;
     let pick = best, pickV = -1;
     for (const c of near) {
-      const v = c.score / best.score * (0.55 + 0.45 * ringSupport(blurred, w, h, c)) * (1 + 0.15 * (c.r / rMax));
+      const v = c.score / best.score * (0.3 + 0.7 * ringSupport(blurred, w, h, c)) * (1 + 0.25 * (c.r / rMax));
       if (v > pickV) { pickV = v; pick = c; }
     }
     return pick;
