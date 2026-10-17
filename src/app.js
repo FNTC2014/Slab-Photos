@@ -2062,9 +2062,58 @@
     if (holderShots() && k === "orev") return "Back photo";
     return label;
   }
-  // the original photo, re-encoded: same pixels and colour, but no location or other camera data
+  // The original photo, re-encoded: same pixels and colour, but no location or other camera data.
+  // Cropped square around the holder (eBay's gallery is square), trimming empty background but
+  // never cutting into the holder: what isn't background, plus the coin and label found in it.
+  const squareCache = new Map();
+  function squareBox(side) {
+    const key = side.photoId + "|" + side.w + "x" + side.h;
+    if (squareCache.has(key)) return squareCache.get(key);
+    const n = 300, k = n / Math.max(side.w, side.h), w = Math.max(1, Math.round(side.w * k)), h = Math.max(1, Math.round(side.h * k));
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    const x = c.getContext("2d"); x.drawImage(side.src, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, lum = (i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    // the background's colour: the median brightness round the photo's border
+    const edge = [];
+    for (let i = 0; i < w; i++) { edge.push(lum(i * 4), lum(((h - 1) * w + i) * 4)); }
+    for (let j = 0; j < h; j++) { edge.push(lum(j * w * 4), lum((j * w + w - 1) * 4)); }
+    edge.sort((a, b) => a - b);
+    const bg = edge[Math.floor(edge.length / 2)], xs = [], ys = [];
+    for (let j = 1; j < h - 1; j++) for (let i = 1; i < w - 1; i++) {
+      if (Math.abs(lum((j * w + i) * 4) - bg) > 28) { xs.push(i); ys.push(j); }
+    }
+    let box = null;
+    if (xs.length > w * h * 0.02) {
+      xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+      const q = (a, p) => a[Math.min(a.length - 1, Math.floor(p * a.length))];
+      box = { x0: q(xs, 0.005) / k, x1: q(xs, 0.995) / k, y0: q(ys, 0.005) / k, y1: q(ys, 0.995) / k };
+    }
+    const add = (x0, y0, x1, y1) => { box = box ? { x0: Math.min(box.x0, x0), y0: Math.min(box.y0, y0), x1: Math.max(box.x1, x1), y1: Math.max(box.y1, y1) } : { x0, y0, x1, y1 }; };
+    for (const sd of [sides.obv, sides.rev, sides.cert]) {
+      if (sd.src !== side.src || !sd.found) continue;
+      if (sd.r > 0) add(sd.cx - sd.r, sd.cy - sd.r, sd.cx + sd.r, sd.cy + sd.r);
+      else if (sd.rw > 0) { const e = Math.hypot(sd.rw, sd.rh) / 2; add(sd.cx - e, sd.cy - e, sd.cx + e, sd.cy + e); }
+    }
+    let out = null;
+    if (box) {
+      const short = Math.min(side.w, side.h);
+      const size = Math.round(Math.min(short, Math.max(box.x1 - box.x0, box.y1 - box.y0) * 1.1));
+      const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+      const x0 = Math.round(Math.max(0, Math.min(side.w - size, cx - size / 2))), y0 = Math.round(Math.max(0, Math.min(side.h - size, cy - size / 2)));
+      out = { x: x0, y: y0, s: size };
+    }
+    squareCache.set(key, out);
+    return out;
+  }
   function originalCanvas(side, maxDim) {
-    return Math.max(side.w, side.h) <= maxDim ? side.src : scaledCanvas(side.src, side.w, side.h, maxDim);
+    const b = squareBox(side);
+    if (!b) return Math.max(side.w, side.h) <= maxDim ? side.src : scaledCanvas(side.src, side.w, side.h, maxDim);
+    const out = Math.min(maxDim, b.s), c = document.createElement("canvas");
+    c.width = c.height = out;
+    const x = c.getContext("2d");
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.drawImage(side.src, b.x, b.y, b.s, b.s, 0, 0, out, out);
+    return c;
   }
   function buildPhotoPicker() {
     const box = $("ePhotos");
@@ -2089,7 +2138,7 @@
       let src = null;
       if (!photoAvailable(k)) src = null;
       else if (k === "plate") src = $("plate");
-      else if (isOriginal(k)) src = sides[ORIGINAL_OF[k]].src;
+      else if (isOriginal(k)) src = originalCanvas(sides[ORIGINAL_OF[k]], 400);
       else src = k === "cert" ? certCanvas(sides[k], 400) : coinCanvas(sides[k], 300);
       if (!src) continue;
       const s = Math.min(c.width / src.width, c.height / src.height);
@@ -2198,7 +2247,7 @@
     const out = [];
     for (const [k] of PHOTO_KEYS) {
       if (L.photos[k] === false || !photoAvailable(k)) continue;
-      const key = k === "plate" ? plateKey : isOriginal(k) ? "photo" + sides[ORIGINAL_OF[k]].photoId : String(sides[k].ver);
+      const key = k === "plate" ? plateKey : isOriginal(k) ? "sq" + sides[ORIGINAL_OF[k]].photoId : String(sides[k].ver);
       if (L.uploads[k] && L.uploads[k].key === key) { out.push({ k, key, url: L.uploads[k].url }); continue; }
       let c;
       if (k === "plate") { c = document.createElement("canvas"); renderPlate(c, P.S, false); }
@@ -2553,7 +2602,7 @@
     : Promise.resolve();
 
   // test hook: only present when a test page asks for it before the app loads
-  if (window.__slabDebug) { window.__slabDebug.state = () => ({ sides, batch }); window.__slabDebug.types = () => typeLib.map((r) => [r.side, r.denom, r.y0, r.from]); }
+  if (window.__slabDebug) { window.__slabDebug.state = () => ({ sides, batch }); window.__slabDebug.types = () => typeLib.map((r) => [r.side, r.denom, r.y0, r.from]); window.__slabDebug.square = (k) => originalCanvas(sides[k], 600).toDataURL("image/jpeg", 0.8); }
 
   render();
 })();
