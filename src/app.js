@@ -56,7 +56,7 @@
   let verSeq = 0, photoSeq = 0;
   const blankSide = () => ({ src: null, w: 0, h: 0, cx: 0, cy: 0, r: 0, rot: 0, rw: 0, rh: 0, base: 0, tilt: 0,
     ver: ++verSeq, photoId: 0, manual: false, found: false, busy: false, rings: [], ringIdx: 0, prior: null,
-    orient: null, rotAuto: true, upFrom: "", textUp: null, textDone: false, textJob: null, legend: 0,
+    orient: null, rotAuto: true, upFrom: "", textUp: null, textFine: null, textDone: false, textJob: null, legend: 0,
     grays: null, note: "", ed: null, edKey: "", tile: null, tileKey: "" });
   const sides = { obv: blankSide(), rev: blankSide(), cert: blankSide() };
   let active = "obv";
@@ -157,6 +157,14 @@
     const o = side.orient, t = side.textUp;
     const base = o ? -o.tilt : 0;
     const cands = [0, 90, 180, 270].map((q) => Math.round(wrap180(base + q) * 10) / 10);
+    // The coin's own lettering has the last word: a coin can sit crooked in its holder. When it
+    // lands within a few degrees of a way the holder is square, the holder's exact angle is used.
+    if (typeof side.textFine === "number") {
+      const want = wrap180(-side.textFine);
+      let best = 0;
+      cands.forEach((c, q) => { if (Math.abs(wrap180(c - want)) < Math.abs(wrap180(cands[best] - want))) best = q; });
+      return Math.abs(wrap180(cands[best] - want)) <= 3 ? { rot: cands[best], from: "text" } : { rot: Math.round(want * 10) / 10, from: "coin" };
+    }
     let pick = 0, from = "photo";
     if (o && o.label && QUARTER[o.label] != null) { pick = (((key === "rev" ? 2 : 0) - QUARTER[o.label] / 90) % 4 + 4) % 4; from = "label"; }
     else if (key === "rev" && useHabit !== false && revUpsideDown()) { pick = 2; from = "habit"; }
@@ -795,8 +803,10 @@
     let straight = "";
     if (coin && has && side.found && side.rotAuto && !side.busy) {
       const why = { text: "the lettering", label: "where the label is", habit: "how you usually shoot holder backs" }[side.upFrom];
-      if (side.orient) straight = "Straightened to the holder's edges. ";
-      if (why && Math.abs(side.rot) > 45) straight += `Turned the right way up going by ${why}. `;
+      if (side.upFrom === "coin") straight = "Turned upright by the coin's own lettering, as the coin sits crooked in its holder. ";
+      else if (side.upFrom === "text" && typeof side.textFine === "number") straight = "Straightened to the holder, checked against the coin's lettering. ";
+      else if (side.orient) straight = "Straightened to the holder's edges. ";
+      if (side.upFrom !== "coin" && why && Math.abs(side.rot) > 45) straight += `Turned the right way up going by ${why}. `;
     }
     const hint = coin
       ? straight + "Drag the ring to move it. Pinch or use Size to sit it on the coin's outer edge."
@@ -921,64 +931,20 @@
   const OBV_WORDS = ["GEORGIVS", "GEORGIUS", "GEORGE", "ELIZABETH", "EDWARDVS", "EDWARDUS", "EDWARD", "VICTORIA", "CHARLES",
     "REGINA", "REX", "DEI", "GRATIA", "IMPERATOR", "IMP", "IND", "BRITT", "OMN", "LIBERTY"];
   const REV_WORDS = ["CANADA", "CENTS", "CENT", "DOLLAR", "DOLLARS", "UNITED", "STATES", "AMERICA", "PLURIBUS", "HALF", "QUARTER", "DIME"];
-  function legendStrip(side) {
-    const D = 800, R = D / 2, src = coinCanvas(side, D);
-    const sd = src.getContext("2d").getImageData(0, 0, D, D).data;
-    const r0 = R * 0.66, r1 = R * 0.99, H = Math.round(r1 - r0), rm = (r0 + r1) / 2;
-    const seg = (150 * Math.PI) / 180, step = (120 * Math.PI) / 180, W = Math.round(seg * rm), gap = 16;
-    const out = document.createElement("canvas");
-    out.width = W; out.height = 6 * (H + gap);
-    const x = out.getContext("2d"), img = x.createImageData(W, out.height), p = img.data;
-    for (let i = 3; i < p.length; i += 4) p[i] = 255;
-    const sample = (sx, sy, o) => {
-      if (sx < 0 || sy < 0 || sx >= D - 1 || sy >= D - 1) return;
-      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
-      for (let ch = 0; ch < 3; ch++) {
-        const i = (y0 * D + x0) * 4 + ch;
-        p[o + ch] = sd[i] * (1 - fx) * (1 - fy) + sd[i + 4] * fx * (1 - fy) + sd[i + D * 4] * (1 - fx) * fy + sd[i + D * 4 + 4] * fx * fy;
-      }
-    };
-    for (let row = 0; row < 6; row++) {
-      const flip = row >= 3, k = row % 3;
-      // top-arc legends read clockwise with letter tops outward; bottom-arc legends the other way
-      const t0 = flip ? Math.PI / 2 + seg / 2 + k * step : -Math.PI / 2 - seg / 2 + k * step;
-      for (let v = 0; v < H; v++) {
-        const rad = flip ? r0 + v : r1 - v, oy = row * (H + gap) + v;
-        for (let u = 0; u < W; u++) {
-          const t = flip ? t0 - u / rm : t0 + u / rm;
-          sample(R + rad * Math.cos(t), R + rad * Math.sin(t), (oy * W + u) * 4);
-        }
-      }
-    }
-    x.putImageData(img, 0, 0);
-    return out;
-  }
-  // Where each strip row's text sits on the coin: degrees clockwise from the top of the crop.
-  // Rows 0-2 read clockwise with letter tops outward, rows 3-5 the other way (see legendStrip).
-  function stripArc(line, H, gap, rm, seg, step) {
-    const row = Math.floor((line.y + line.h / 2) / (H + gap));
-    if (row < 0 || row > 5) return null;
-    const flip = row >= 3, k = row % 3;
-    const t0 = flip ? Math.PI / 2 + seg / 2 + k * step : -Math.PI / 2 - seg / 2 + k * step;
-    const at = (u) => (((flip ? t0 - u / rm : t0 + u / rm) * 180) / Math.PI + 90);
-    const a = at(line.x), b = at(line.x + line.w);
-    return { from: Math.min(a, b), to: Math.max(a, b), outward: !flip };
-  }
   // Which way is up, from where the legend sits: lettering whose tops face the rim runs across
   // the top of a coin, lettering whose tops face the centre runs along the bottom. Returns the
   // design's up in degrees clockwise from the top of the crop, and how sure that is, or null.
-  function legendUp(lines) {
-    const D = 800, R = D / 2, r0 = R * 0.66, r1 = R * 0.99, H = Math.round(r1 - r0), rm = (r0 + r1) / 2;
-    const seg = (150 * Math.PI) / 180, step = (120 * Math.PI) / 180, gap = 16;
+  function legendUp(lines, arcOf, only) {
     const outB = new Uint8Array(180), inB = new Uint8Array(180);
     for (const l of lines) {
       const chars = String(l.text || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
       // denticles and scratches can read as rows of I, L or 1
       if (chars.length < 3 || new Set(chars).size < 2 || /^[IL1]+$/.test(chars)) continue;
-      const arc = stripArc(l, H, gap, rm, seg, step);
+      if (only && !only(l)) continue;
+      const arc = arcOf(l);
       if (!arc) continue;
       // a line the reader reports upside down belongs to the other kind of row
-      const outward = typeof l.angle === "number" && Math.abs(wrap180(l.angle)) > 120 ? !arc.outward : arc.outward;
+      const outward = typeof l.angle === "number" && Math.abs(wrap180(l.angle)) > 120 ? arc.row !== 0 : arc.row === 0;
       const bins = outward ? outB : inB;
       for (let d = arc.from; d <= arc.to; d += 2) bins[(((Math.floor(d / 2)) % 180) + 180) % 180] = 1;
     }
@@ -992,22 +958,127 @@
     if (covered < 12 || conf < 0.25) return null;
     return { up: Math.round((Math.atan2(vy, vx) * 180) / Math.PI), strong: covered >= 24 && conf >= 0.5, covered, conf: Math.round(conf * 100) / 100 };
   }
+  // Words that turn up in coin legends. A line of reading that contains one is the rim lettering
+  // rather than a scratch, a denticle or the holder's wood-grain background.
+  const LEGEND_WORDS = ["ELIZABETH", "REGINA", "CANADA", "CANADIAN", "CENTS", "DOLLAR", "DOLLARS", "VICTORIA", "GEORGIVS", "GEORGIUS",
+    "EDWARDVS", "EDWARDUS", "CHARLES", "LIBERTY", "UNITED", "STATES", "AMERICA", "PLURIBUS", "UNUM", "TRUST", "QUARTER", "HALF",
+    "IMPERATOR", "GRATIA", "FIDEI", "DEFENSOR", "BRITT", "OMN", "DIME", "DEI"];
+  const near = (a, b) => {
+    if (a === b) return true;
+    if (Math.abs(a.length - b.length) > 1) return false;
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return a.slice(i + 1) === b.slice(i + 1) || a.slice(i + 1) === b.slice(i) || a.slice(i) === b.slice(i + 1);
+  };
+  // Letters of legend words found in this reading (0 when none).
+  function legendLetters(text) {
+    const up = String(text || "").toUpperCase(), toks = up.replace(/[^A-Z]+/g, " ").trim().split(" ").filter(Boolean), glued = up.replace(/[^A-Z]/g, "");
+    let n = 0;
+    for (const w of LEGEND_WORDS) {
+      if (w.length < 6) { if (toks.includes(w)) n += w.length; continue; }
+      if (toks.some((t) => t.length >= 5 && near(t, w)) || glued.includes(w)) { n += w.length; continue; }
+      // a word cut by the edge of the strip or half-read: five or more letters in a row still count
+      for (let L = w.length - 1; L >= 5; L--) {
+        let hit = false;
+        for (let i = 0; i + L <= w.length && !hit; i++) hit = glued.includes(w.slice(i, i + L));
+        if (hit) { n += L; break; }
+      }
+    }
+    return n;
+  }
+  // Rows of rim lettering unrolled flat. Each spec is { start, span, inward }: degrees clockwise from
+  // the top of the crop where the row begins, how far it runs, and whether the lettering faces the
+  // centre (the bottom of the coin, read left to right) rather than the rim.
+  function unroll(side, specs) {
+    const D = 800, R = D / 2, src = coinCanvas(side, D), sd = src.getContext("2d").getImageData(0, 0, D, D).data;
+    const r0 = R * 0.66, r1 = R * 0.99, H = Math.round(r1 - r0), rm = (r0 + r1) / 2, gap = 16, pxDeg = (rm * Math.PI) / 180;
+    const W = Math.round(Math.max(...specs.map((q) => q.span)) * pxDeg), rowH = H + gap;
+    const out = document.createElement("canvas");
+    out.width = W; out.height = specs.length * rowH;
+    const x = out.getContext("2d"), img = x.createImageData(W, out.height), p = img.data;
+    for (let i = 3; i < p.length; i += 4) p[i] = 255;
+    specs.forEach((q, row) => {
+      for (let v = 0; v < H; v++) {
+        const rad = q.inward ? r0 + v : r1 - v, oy = row * rowH + v;
+        for (let u = 0; u < W; u++) {
+          const d = u / pxDeg;
+          if (d > q.span) break;
+          const t = (((q.inward ? q.start - d : q.start + d) - 90) * Math.PI) / 180, sx = R + rad * Math.cos(t), sy = R + rad * Math.sin(t);
+          if (sx < 0 || sy < 0 || sx >= D - 1 || sy >= D - 1) continue;
+          const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0, o = (oy * W + u) * 4;
+          for (let ch = 0; ch < 3; ch++) {
+            const i = (y0 * D + x0) * 4 + ch;
+            p[o + ch] = sd[i] * (1 - fx) * (1 - fy) + sd[i + 4] * fx * (1 - fy) + sd[i + D * 4] * (1 - fx) * fy + sd[i + D * 4 + 4] * fx * fy;
+          }
+        }
+      }
+    });
+    x.putImageData(img, 0, 0);
+    const arc = (l) => {
+      const row = Math.floor((l.y + l.h / 2) / rowH), q = specs[row];
+      if (!q) return null;
+      const at = (px) => (q.inward ? q.start - Math.max(0, px) / pxDeg : q.start + Math.max(0, px) / pxDeg);
+      const a = at(l.x), b = at(l.x + l.w);
+      return { row, from: Math.min(a, b), to: Math.max(a, b) };
+    };
+    return { canvas: out, arc };
+  }
+  // The coin's own up, found by centring the rim lettering. Starts from a rough guess (degrees
+  // clockwise from the top of the photo) and re-reads strips centred on it until the legend sits
+  // squarely at the top (or, along the bottom, squarely opposite). Lettering is only counted when it
+  // spells legend words. Returns the design's up in photo terms, or null when it isn't clear.
+  async function refineLegend(side, guess) {
+    let est = guess, letters = 0;
+    for (let it = 0; it < 6; it++) {
+      const cur = side.rot, c = est + cur;
+      const un = unroll(side, [{ start: c - 135, span: 270, inward: false }, { start: c + 315, span: 270, inward: true }]);
+      const lines = await ocrLines(un.canvas, 1500);
+      const ext = [null, null], n = [0, 0];
+      for (const l of lines) {
+        const k = legendLetters(l.text), a = k >= 4 && un.arc(l);
+        if (!a) continue;
+        const e = ext[a.row] || (ext[a.row] = { from: Infinity, to: -Infinity });
+        e.from = Math.min(e.from, a.from); e.to = Math.max(e.to, a.to); n[a.row] += k;
+      }
+      const v = [ext[0] && n[0] >= 4 ? (ext[0].from + ext[0].to) / 2 : null, ext[1] && n[1] >= 4 ? (ext[1].from + ext[1].to) / 2 - 180 : null];
+      if (v[0] == null && v[1] == null) return null;
+      let now;
+      if (v[0] != null && v[1] != null) {
+        if (Math.abs(wrap180(v[0] - v[1])) > 25) { if (n[0] < 6) return null; now = v[0]; }
+        else now = v[0] + wrap180(v[1] - v[0]) * (n[1] / (n[0] + n[1]));
+      } else now = v[0] != null ? v[0] : v[1];
+      letters = n[0] + n[1];
+      const next = wrap180(now - cur), moved = Math.abs(wrap180(next - est));
+      est = next;
+      if (moved < 1.5) break;
+      if (it === 5 && moved > 4) return null;
+    }
+    return letters >= 6 ? { up: Math.round(est * 10) / 10, letters } : null;
+  }
   async function legendRead(side) {
-    const rot = side.rot, lines = await ocrLines(legendStrip(side), 1200);
+    // the whole rim unrolled twice over: lettering facing the rim, and lettering facing the centre
+    const rot = side.rot, un = unroll(side, [{ start: 0, span: 450, inward: false }, { start: 360, span: 450, inward: true }]);
+    const lines = await ocrLines(un.canvas, 2200);
     const text = " " + lines.map((l) => l.text).join(" ").toUpperCase().replace(/[^A-Z]+/g, " ") + " ";
     const has = (w) => text.includes(" " + w + " ") || (w.length >= 6 && text.includes(w));
     const dg = /\bD\s?G\b/.test(text) ? 1 : 0;
-    const up = legendUp(lines);
+    const up = legendUp(lines, un.arc);
     // kept relative to the photo itself, so it still holds after the crop is turned
     if (up) up.up = Math.round(wrap180(up.up - rot) * 10) / 10;
-    return { score: OBV_WORDS.filter(has).length + dg - REV_WORDS.filter(has).length, up };
+    // any angle, not just up or down: from lettering that spells legend words
+    let fine = null;
+    const rough = legendUp(lines, un.arc, (l) => legendLetters(l.text) >= 4);
+    if (rough) {
+      try { fine = await refineLegend(side, wrap180(rough.up - rot)); } catch (e) { fine = null; }
+    }
+    return { fine, score: OBV_WORDS.filter(has).length + dg - REV_WORDS.filter(has).length, up };
   }
   // Read both coins' legends once each (phone only): to straighten them and, when asked,
   // to tell which is the obverse.
   function readLegendOnce(s) {
     if (!s.textJob) {
       s.textJob = s.textDone ? Promise.resolve() : legendRead(s)
-        .then((r) => { s.textUp = r.up; s.legend = r.score; })
+        .then((r) => { s.textUp = r.up; s.legend = r.score; s.textFine = r.fine ? r.fine.up : null; })
         .catch(() => { /* unreadable: straightened from the holder alone */ })
         .then(() => { s.textDone = true; });
     }
@@ -1397,7 +1468,7 @@
      is kept as the picked files plus what was found in them, so a phone doesn't run out of memory. */
   const batch = { active: false, busy: false, groups: [], idx: -1, progress: "", stripKey: "", advanceOnClose: false };
   const PARAMS = ["cx", "cy", "r", "rot", "rw", "rh", "base", "tilt", "rings", "ringIdx", "manual", "found", "note", "prior",
-    "orient", "rotAuto", "upFrom", "textUp", "textDone", "legend"];
+    "orient", "rotAuto", "upFrom", "textUp", "textFine", "textDone", "legend"];
 
   function thumbOf(side, res) {
     const S = 96, c = document.createElement("canvas");
