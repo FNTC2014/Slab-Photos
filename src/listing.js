@@ -162,13 +162,13 @@ function listingModule() {
     return /^[ABCEGHJ-NPRSTVXY]\d[A-Z]\d[A-Z]\d$/.test(t) ? t.slice(0, 3) + " " + t.slice(3) : "";
   }
   // Weight and size of the parcel, which calculated shipping (Canada Post rates) needs.
-  // pack: { grams, l, w, h } in grams and centimetres.
+  // pack: { grams, l, w, h, type } in grams and centimetres; type is eBay's package kind, if any.
   function packageXml(pack) {
     if (!pack || !(Number(pack.grams) > 0)) return "";
     const g = Math.round(Number(pack.grams)), cm = (v) => Math.max(1, Math.round(Number(v) || 1));
     return "<ShippingPackageDetails><MeasurementUnit>Metric</MeasurementUnit>" +
       `<PackageDepth unit="cm">${cm(pack.h)}</PackageDepth><PackageLength unit="cm">${cm(pack.l)}</PackageLength><PackageWidth unit="cm">${cm(pack.w)}</PackageWidth>` +
-      "<ShippingPackage>PackageThickEnvelope</ShippingPackage>" +
+      (pack.type ? `<ShippingPackage>${escXml(pack.type)}</ShippingPackage>` : "") +
       `<WeightMajor unit="kg">${Math.floor(g / 1000)}</WeightMajor><WeightMinor unit="gr">${g % 1000}</WeightMinor>` +
       "</ShippingPackageDetails>";
   }

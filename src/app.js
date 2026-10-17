@@ -2289,8 +2289,16 @@
         sku: [v.service, v.cert].filter(Boolean).join(" "), pictures: imgs.map((x) => x.url), specifics,
         shippingPolicy: L.ship, paymentPolicy: ebay.settings.payment, returnPolicy: ebay.settings.returns, storeCategoryId: L.store,
       }, verify);
-      const res = await EbayNative.request({ trading: verify ? "VerifyAddFixedPriceItem" : "AddFixedPriceItem", body: xml });
-      const r = Listing.tradingResult(new DOMParser().parseFromString(res.body || "", "text/xml"));
+      const send = async (body) => {
+        const res = await EbayNative.request({ trading: verify ? "VerifyAddFixedPriceItem" : "AddFixedPriceItem", body });
+        return { res, r: Listing.tradingResult(new DOMParser().parseFromString(res.body || "", "text/xml")) };
+      };
+      let { res, r } = await send(xml);
+      // eBay Canada is particular about the kind of package: try the others it may want
+      for (const type of ["LargeEnvelope", "PackageThickEnvelope", "ExtraLargePack"]) {
+        if (r.ok || !r.errors.some((e) => /ShippingPackage/i.test(e.message))) break;
+        ({ res, r } = await send(xml.replace(/(<ShippingPackage>[^<]*<\/ShippingPackage>)?<WeightMajor/, `<ShippingPackage>${type}</ShippingPackage><WeightMajor`)));
+      }
       const said = (list) => list.map((e) => e.message).filter(Boolean).slice(0, 3).join(" ");
       if (!r.ok) {
         listNote(L, "eBay didn't accept it: " + (said(r.errors) || `no reason given (status ${res.status}).`), "warn");
