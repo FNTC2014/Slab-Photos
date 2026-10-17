@@ -13,6 +13,9 @@ const css = src("style.css");
 const body = src("body.html");
 const scripts = [strip(src("detect.js")), strip(src("labelparse.js")), src("app.js")]
   .map((js) => `<script>\n${js}</script>`).join("\n");
+// The app also needs Capacitor's small runtime to talk to the phone (on-device reading, saving).
+const capacitorRuntime = readFileSync(join(root, "node_modules", "@capacitor", "core", "dist", "capacitor.js"), "utf8")
+  .replace(/\n\/\/# sourceMappingURL=.*$/m, "");
 
 // --- app: bundle the fonts ---
 const fonts = [
@@ -46,6 +49,8 @@ ${faces}
 ${css}</style>
 </head><body>
 ${body}
+<script>
+${capacitorRuntime}</script>
 ${scripts}
 </body></html>
 `;

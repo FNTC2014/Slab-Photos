@@ -187,6 +187,7 @@ function coinDetectModule() {
     const cs = [], sn = [];
     for (let k = 0; k < N; k++) { const t = (k / N) * Math.PI * 2; cs.push(Math.cos(t)); sn.push(Math.sin(t)); }
     const M = [], A = [], rho = [];
+    const G = new Float32Array((steps + 1) * N).fill(-1);
     for (let s = 0; s <= steps; s++) {
       const rr = c.r * (lo + (hi - lo) * s / steps);
       let n = 0;
@@ -196,11 +197,24 @@ function coinDetectModule() {
         const m = bilinear(g, w, h, c.cx + cs[k] * rr, c.cy + sn[k] * rr);
         if (a !== a || b !== b || m !== m) continue;
         tg[n] = Math.abs(b - a); ta[n] = m; n++;
+        G[s * N + k] = Math.abs(b - a);
       }
       rho.push(rr);
       if (n < N * 0.5) { M.push(0); A.push(NaN); } else { M.push(medianOf(tg, n)); A.push(medianOf(ta, n)); }
     }
-    return { M, A, rho };
+    // The same, but each direction takes its strongest edge within a few percent of the radius,
+    // so a coin with flat sides (the 12-sided nickel) still shows as one continuous ring.
+    const win = Math.max(1, Math.round((0.035 / (hi - lo)) * steps)), M2 = [];
+    for (let s = 0; s <= steps; s++) {
+      let n = 0;
+      for (let k = 0; k < N; k++) {
+        let mx = -1;
+        for (let t = Math.max(0, s - win); t <= Math.min(steps, s + win); t++) mx = Math.max(mx, G[t * N + k]);
+        if (mx >= 0) tg[n++] = mx;
+      }
+      M2.push(n < N * 0.5 ? 0 : medianOf(tg, n));
+    }
+    return { M, M2, A, rho };
   }
 
   // 5th and 95th percentile brightness inside a disc.
@@ -225,7 +239,7 @@ function coinDetectModule() {
   // and return the rest as alternatives the person can switch to.
   function pickRing(g, w, h, c) {
     const R = c.r;
-    const P = radialProfile(g, w, h, c, 0.8, 1.2);
+    const P = radialProfile(g, w, h, c, 0.68, 1.2);
     const M = P.M.map((v, i, a) => (a[i - 1] ?? v) * 0.25 + v * 0.5 + (a[i + 1] ?? v) * 0.25);
     let MR = 0;
     P.rho.forEach((r, i) => { if (Math.abs(r - R) <= R * 0.012) MR = Math.max(MR, M[i]); });
@@ -234,8 +248,20 @@ function coinDetectModule() {
     for (let i = 1; i < M.length - 1; i++) {
       if (!(M[i] >= M[i - 1] && M[i] >= M[i + 1] && M[i] >= MR * 0.3)) continue;
       const q = P.rho[i] / R;
-      if (q >= 0.82 && q <= 0.975 && (!inner || M[i] > inner.m)) inner = { rho: P.rho[i], m: M[i] };
+      if (q >= 0.7 && q <= 0.975 && (!inner || M[i] > inner.m)) inner = { rho: P.rho[i], m: M[i] };
       if (q >= 1.025 && q <= 1.18 && (!outer || M[i] > outer.m)) outer = { rho: P.rho[i], m: M[i] };
+    }
+    if (!inner) {
+      // no round inner edge: look again allowing for flat-sided coins
+      let MR2 = 0;
+      P.rho.forEach((r, i) => { if (Math.abs(r - R) <= R * 0.012) MR2 = Math.max(MR2, P.M2[i]); });
+      const M2 = P.M2;
+      for (let i = 1; i < M2.length - 1; i++) {
+        const q = P.rho[i] / R;
+        if (q < 0.7 || q > 0.93 || !(M2[i] >= M2[i - 1] && M2[i] >= M2[i + 1] && M2[i] >= MR2 * 0.45)) continue;
+        // keep the same scale as MR for the checks below
+        if (!inner || M2[i] > inner.m2) inner = { rho: P.rho[i], m: MR * (M2[i] / MR2), m2: M2[i] };
+      }
     }
     const bandMedian = (r0, r1) => {
       const v = [];
@@ -261,7 +287,13 @@ function coinDetectModule() {
       // what lies outside it (background on both sides). A coin's own rim never looks like that.
       const outside = bandMedian(R * 1.02, R * 1.06);
       const thinRing = outside === outside && Math.abs(outside - band) < 25;
-      if (inner.m >= MR * 0.25 && range && !looksLikeMetal && thinRing) { main = innerCircle; alts.push(c); }
+      // A holder insert (often black) fills the gap with an even, featureless band; a coin's own
+      // rim band has relief and reads as metal.
+      let bandEdge = 0, nBand = 0;
+      P.rho.forEach((r, i) => { if (r > inner.rho + gap * 0.2 && r < R - gap * 0.2) { bandEdge += M[i]; nBand++; } });
+      // ...and it is wide: an insert gap is a tenth of the radius or more, a rim band far less
+      const evenBand = gap >= R * 0.1 && nBand > 2 && bandEdge / nBand < MR * 0.2;
+      if (inner.m >= MR * 0.25 && range && !looksLikeMetal && (thinRing || evenBand)) { main = innerCircle; alts.push(c); }
       else alts.push(innerCircle);
     }
     if (outer) alts.push(snap(outer.rho));
@@ -292,7 +324,8 @@ function coinDetectModule() {
     }
     if (ends.length < N * 0.3) return c.r;
     ends.sort((a, b) => a - b);
-    const r = ends[ends.length >> 1];
+    // a little above the median, so many-sided coins (the 12-sided nickel) keep their corners
+    const r = ends[Math.floor(ends.length * 0.7)];
     return Math.max(c.r, Math.min(r, c.r * 1.03));
   }
 

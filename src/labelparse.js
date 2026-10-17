@@ -116,6 +116,48 @@ function labelParseModule() {
     return { service: "PCGS", date, denomination, grade, variety: notes.join(" · "), cert };
   }
 
+  // NGC and anything else: the same pieces in a looser layout ("1952 CANADA S$1", "MS 64",
+  // "4285301-005"). Year, denomination and grade are found wherever they sit.
+  function parseGeneric(lines, service) {
+    const L = lines.map(norm).filter(Boolean);
+    const used = new Set();
+    let date = "", denomination = "", grade = "", cert = "";
+    L.forEach((s, i) => {
+      const m = s.replace(/\s+/g, "").match(/(\d{6,8}-\d{3})/) || (service === "NGC" && s.match(/\b(\d{7,10})\b/));
+      if (m && !cert) { cert = m[1]; used.add(i); }
+    });
+    L.forEach((s, i) => {
+      if (date || used.has(i)) return;
+      const t = s.replace(/\b[0-9OSIl]{4}\b/g, (tok) => (/^(1[5-9]|20)\d\d$/.test(fixDigits(tok)) ? fixDigits(tok) : tok));
+      const y = t.match(YEAR_RE);
+      if (!y) return;
+      date = y[1];
+      const rest = t.slice(y.index + y[0].length);
+      if (!denomination) denomination = pcgsDenom(rest);
+      const suffix = norm(rest.replace(COUNTRIES, " ").replace(/\b(?:[SG])?\$\s*\d+(?:\.\d+)?|\b\d{1,3}\s*C\b/i, " ").replace(/[^A-Za-z0-9\- ]/g, " "));
+      if (suffix && !PCGS_GRADE_RE.test(suffix)) date += " " + suffix;
+      used.add(i);
+    });
+    if (!denomination) L.forEach((s, i) => {
+      if (denomination || used.has(i)) return;
+      const d = pcgsDenom(s);
+      if (d && /^\s*(?:[SG]?\$\s*\d+(?:\.\d+)?|\d{1,3}\s*C)\s*$/i.test(s.replace(COUNTRIES, " "))) { denomination = d; used.add(i); }
+    });
+    L.forEach((s, i) => {
+      if (grade || used.has(i)) return;
+      const g = s.replace(/NGC|PCGS/gi, " ").match(PCGS_GRADE_RE);
+      if (!g) return;
+      grade = g[1].toUpperCase() + "-" + fixDigits(g[2]) + (g[3] || "") + (g[4] ? " " + g[4].toUpperCase() : "") + (g[5] ? "★" : "");
+      const after = norm(s.slice(s.indexOf(g[0]) + g[0].length));
+      if (after && /^[A-Z ]+$/i.test(after)) grade += " " + after.toUpperCase();
+      used.add(i);
+    });
+    const notes = L.filter((s, i) => !used.has(i))
+      .map((s) => norm(s.replace(/NGC|NUMISMATIC GUARANTY (CORPORATION|COMPANY)|PCGS/gi, " ").replace(COUNTRIES, " ").replace(/[|!Il]{4,}/g, " ")))
+      .filter((s) => s && /[A-Za-z]{2,}/.test(s));
+    return { service, date, denomination, grade, variety: notes.join(" · "), cert };
+  }
+
   function detectService(lines) {
     const all = lines.join(" ").toUpperCase();
     if (/PCGS|P[CG]GS\s*[A-Z]{2}\s*\d/.test(all)) return "PCGS";
@@ -128,10 +170,10 @@ function labelParseModule() {
     const service = detectService(lines);
     if (service === "ICCS") return parseICCS(lines);
     if (service === "PCGS") return parsePCGS(lines);
-    return { service, date: "", denomination: "", grade: "", variety: "", cert: "" };
+    return parseGeneric(lines, service);
   }
 
-  return { parse, parseICCS, parsePCGS, headerOf, certOf, detectService };
+  return { parse, parseICCS, parsePCGS, parseGeneric, headerOf, certOf, detectService };
 }
 
 if (typeof module !== "undefined") module.exports = labelParseModule;

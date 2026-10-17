@@ -31,14 +31,21 @@
   } catch (e) { /* storage unavailable */ }
   const saveLook = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(look)); } catch (e) { /* ignore */ } };
 
-  /* ---------- capabilities ---------- */
+  /* ---------- capabilities ----------
+     In the Android app, labels are read and plates saved on the phone (SlabVision plugin).
+     In claude.ai, Claude reads labels on the viewer's own account and the viewer saves files. */
+  const capx = window.capacitorExports;
+  const isNative = !!(capx && capx.Capacitor && typeof capx.Capacitor.isNativePlatform === "function" && capx.Capacitor.isNativePlatform());
+  const Vision = isNative ? capx.registerPlugin("SlabVision") : null;
+  const LabelParse = typeof labelParseModule === "function" ? labelParseModule() : null;
   const cl = window.claude;
-  const canUse = cl && typeof cl.use === "function";
+  const canUse = !isNative && cl && typeof cl.use === "function";
   const samplePromise = canUse ? cl.use("sample").catch(() => null) : Promise.resolve(null);
   const downloadsPromise = canUse ? cl.use("downloads").catch(() => null) : Promise.resolve(null);
-  let sampleState = "pending";
+  let sampleState = isNative ? "native" : "pending";
   let imageLimits = null;
-  samplePromise.then(async (s) => {
+  const canRead = () => sampleState === "ready" || sampleState === "native";
+  if (!isNative) samplePromise.then(async (s) => {
     if (!s) { sampleState = "unavailable"; markDirty(); return; }
     try { const lim = await s.limits(); imageLimits = lim && lim.images ? lim.images : null; } catch (e) { imageLimits = null; }
     sampleState = imageLimits ? "ready" : "unavailable";
@@ -147,8 +154,10 @@
     const g = graysFor(side);
     const res = await runDetect({ kind: isCoin(key) ? "coin" : "rect", small: g.small, big: g.big, prior: prior || null });
     if (side.photoId !== pid) return;
-    side.busy = false;
     if (isCoin(key)) applyCoin(side, res); else applyRect(side, res, prior);
+    if (!isCoin(key) && isNative && !prior) await refineCertByText(side);
+    if (side.photoId !== pid) return;
+    side.busy = false;
     bump(side);
   }
 
@@ -192,6 +201,13 @@
       cx: c.width / 2, cy: c.height / 2, r: Math.min(c.width, c.height) * 0.35, rw: c.width * 0.8, rh: c.height * 0.8, file });
     return side;
   }
+  // A second use of the same photo (a holder front is both the obverse and the certificate).
+  function sharedSide(base) {
+    const s = blankSide();
+    Object.assign(s, { src: base.src, w: base.w, h: base.h, file: base.file, grays: base.grays, photoId: ++photoSeq,
+      cx: base.w / 2, cy: base.h / 2, r: Math.min(base.w, base.h) * 0.35, rw: base.w * 0.8, rh: base.h * 0.4 });
+    return s;
+  }
 
   // Several photos at once: work out which is the certificate, put the coins in the order
   // they were picked, then let Claude read the label and confirm which coin is the obverse.
@@ -210,18 +226,25 @@
     loaded.forEach((s, i) => { sides[keys0[i]] = s; });
     markDirty();
     await tick();
-    const results = [];
+    const results = [], roles = [];
     for (const s of loaded) {
       const g = graysFor(s);
-      results.push(await runDetect({ kind: "classify", small: g.small, big: g.big }));
+      const r = await runDetect({ kind: "classify", small: g.small, big: g.big });
+      results.push(r);
+      roles.push(await roleOf(s, r));
     }
-    let certIdx = -1;
-    results.forEach((r, i) => {
-      const sc = r ? r.certScore : -1;
-      if (certIdx < 0 || sc > (results[certIdx] ? results[certIdx].certScore : -1)) certIdx = i;
-    });
-    if (loaded.length < 3 && !(results[certIdx] && results[certIdx].certScore > 0.2)) certIdx = -1;
-    const coinIdx = loaded.map((_, i) => i).filter((i) => i !== certIdx);
+    const frontIdx = roles.findIndex((r) => r.role === "front");
+    let certIdx = frontIdx;
+    if (certIdx < 0) {
+      results.forEach((r, i) => {
+        const sc = r ? r.certScore : -1;
+        if (certIdx < 0 || sc > (results[certIdx] ? results[certIdx].certScore : -1)) certIdx = i;
+      });
+      if (loaded.length < 3 && !(results[certIdx] && results[certIdx].certScore > 0.2)) certIdx = -1;
+    }
+    // the holder front is the obverse; other coin photos follow in the order picked
+    const coinIdx = loaded.map((_, i) => i).filter((i) => i === frontIdx || i !== certIdx)
+      .sort((p, q) => (q === frontIdx) - (p === frontIdx));
     sides.obv = blankSide(); sides.rev = blankSide();
     if (certIdx >= 0) sides.cert = blankSide();
     coinIdx.slice(0, 2).forEach((i, n) => {
@@ -230,14 +253,19 @@
       sides[n === 0 ? "obv" : "rev"] = s; bump(s);
     });
     if (certIdx >= 0) {
-      const s = loaded[certIdx]; s.busy = false;
-      applyRect(s, results[certIdx] && results[certIdx].rect, null);
+      const base = loaded[certIdx], s = certIdx === frontIdx ? sharedSide(base) : base;
+      s.busy = false;
+      applyRect(s, certIdx === frontIdx ? roles[certIdx].rect : results[certIdx] && results[certIdx].rect, null);
       sides.cert = s; bump(s);
     }
     setActive("obv");
     $("toast").hidden = true;
-    if (sides.cert.src && sampleState === "ready") readCert({ checkSides: !!(sides.obv.src && sides.rev.src) });
-    else toast(certIdx >= 0 ? "Sorted. Check obverse and reverse, and tap Swap if they're the wrong way round." : "Couldn't tell which photo is the certificate. Check the tiles.");
+    const both = !!(sides.obv.src && sides.rev.src);
+    if (sides.cert.src && canRead()) readCert({ checkSides: both });
+    else {
+      if (isNative && both) checkSidesNative();
+      toast(certIdx >= 0 ? "Sorted. Check obverse and reverse, and tap Swap if they're the wrong way round." : "Couldn't tell which photo is the certificate. Check the tiles.");
+    }
   }
 
   async function loadPhoto(file, key) {
@@ -685,6 +713,162 @@
     markDirty();
   }
 
+  /* ---------- on-device reading (Android app) ---------- */
+  const LABEL_TEXT = /PCGS|NGC|ICCS|ANACS|CCCS|CERTIFICATION|COMMENTS|GENUINE|\b(MS|PR|PF|SP|PL|AU|XF|EF|VF)\s*-?\s*\d{1,2}\b|\d{3,6}\s*[.,]\s*\d{1,2}\s*\/\s*\d{5,10}/i;
+  async function ocrLines(canvas, maxDim) {
+    const c = scaledCanvas(canvas, canvas.width, canvas.height, maxDim), k = canvas.width / c.width;
+    const res = await Vision.readText({ image: c.toDataURL("image/jpeg", 0.92) });
+    return ((res && res.lines) || []).map((l) => ({ text: String(l.text || ""), x: (l.x || 0) * k, y: (l.y || 0) * k, w: (l.w || 0) * k, h: (l.h || 0) * k }));
+  }
+  async function barcodeBoxes(canvas, maxDim) {
+    const c = scaledCanvas(canvas, canvas.width, canvas.height, maxDim), k = canvas.width / c.width;
+    const res = await Vision.readBarcodes({ image: c.toDataURL("image/jpeg", 0.92) });
+    return ((res && res.barcodes) || []).map((b) => ({ value: String(b.value || ""), x: (b.x || 0) * k, y: (b.y || 0) * k, w: (b.w || 0) * k, h: (b.h || 0) * k }));
+  }
+  // Join pieces that sit on the same row, left to right, so "CAN 1950 $1 MS66" stays one line.
+  function rowsOf(lines) {
+    const ls = lines.filter((l) => l.text.trim()).sort((p, q) => (p.y + p.h / 2) - (q.y + q.h / 2));
+    const rows = [];
+    for (const l of ls) {
+      const cy = l.y + l.h / 2, last = rows[rows.length - 1];
+      if (last && Math.abs(last.cy - cy) < Math.min(last.h, l.h) * 0.5) last.items.push(l);
+      else rows.push({ cy, h: l.h, items: [l] });
+    }
+    return rows.map((r) => r.items.sort((p, q) => p.x - q.x).map((i) => i.text).join(" "));
+  }
+  const unionBox = (bs) => bs.reduce((u, b) => ({ x0: Math.min(u.x0, b.x), y0: Math.min(u.y0, b.y), x1: Math.max(u.x1, b.x + b.w), y1: Math.max(u.y1, b.y + b.h) }),
+    { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+  // Where is the label in this photo? Its printed text and barcode say, even on a whole holder.
+  async function findLabelByText(side, coin) {
+    const lines = await ocrLines(side.src, 1600);
+    let codes = [];
+    try { codes = await barcodeBoxes(side.src, 1600); } catch (e) { codes = []; }
+    const above = (b) => !coin || b.y + b.h < coin.cy - coin.r * 0.55;
+    const key = lines.filter((l) => LABEL_TEXT.test(l.text) && above(l));
+    if (key.length < 2) return null;
+    let U = unionBox(key);
+    const gx = (U.x1 - U.x0) * 0.35, gy = (U.y1 - U.y0) * 0.6;
+    const near = lines.concat(codes).filter((b) => above(b) && b.x >= U.x0 - gx && b.x + b.w <= U.x1 + gx && b.y >= U.y0 - gy && b.y + b.h <= U.y1 + gy);
+    U = unionBox(key.concat(near));
+    const w = U.x1 - U.x0, h = U.y1 - U.y0;
+    const insideCoin = !!coin && lines.some((l) => LABEL_TEXT.test(l.text) && Math.hypot(l.x + l.w / 2 - coin.cx, l.y + l.h / 2 - coin.cy) < coin.r * 0.8);
+    return { prior: { cx: (U.x0 + U.x1) / 2, cy: (U.y0 + U.y1) / 2, rw: w * 1.12, rh: h * 1.3 + w * 0.04, rot: 0 }, insideCoin };
+  }
+  // What is this photo: a coin, a certificate, or a holder front with both?
+  async function roleOf(side, res) {
+    const coin = res && res.coin, base = res && res.certScore > 0 ? "label" : "coin";
+    if (!isNative || !coin || !(coin.support >= 0.5)) return { role: base };
+    let t = null;
+    try { t = await findLabelByText(side, coin); } catch (e) { t = null; }
+    if (!t || t.insideCoin) return { role: base };
+    const g = graysFor(side);
+    const rect = await runDetect({ kind: "rect", small: g.small, big: g.big, prior: t.prior });
+    return { role: "front", rect: rect && iou(rect, t.prior) > 0.3 ? rect : { ...t.prior } };
+  }
+  // A certificate photo that turns out to be a whole holder: move the crop onto the label.
+  async function refineCertByText(side) {
+    let t = null;
+    try { t = await findLabelByText(side, null); } catch (e) { t = null; }
+    if (!t) return;
+    const current = { cx: side.cx, cy: side.cy, rw: side.rw, rh: side.rh, rot: certRot(side) };
+    if (side.found && iou(current, t.prior) > 0.3) return;
+    const g = graysFor(side);
+    const rect = await runDetect({ kind: "rect", small: g.small, big: g.big, prior: t.prior });
+    applyRect(side, rect && iou(rect, t.prior) > 0.3 ? rect : { ...t.prior }, null);
+  }
+
+  async function readCertNative(opts) {
+    const cert = sides.cert;
+    if (!cert.src || !LabelParse) return;
+    const token = { stop: false };
+    readCtl = { abort() { token.stop = true; } };
+    readMsgText = "";
+    updateReadUI();
+    try {
+      const crop = certCanvas(cert, Math.round(Math.min(2000, Math.max(1000, cert.rw))));
+      const lines = await ocrLines(crop, 2000);
+      let codes = [];
+      try { codes = await barcodeBoxes(crop, 2000); } catch (e) { codes = []; }
+      if (token.stop || sides.cert !== cert) {
+        readCtl = null;
+        if (token.stop) readMsg("Stopped. Tap Read certificate to try again.");
+        return;
+      }
+      const d = LabelParse.parse(rowsOf(lines));
+      // PCGS and NGC barcodes carry the cert number; use it when the printed one wasn't readable
+      if (!d.cert && d.service !== "ICCS") {
+        const num = codes.map((b) => b.value.replace(/\D/g, "")).find((v) => v.length >= 7 && v.length <= 10);
+        if (num) d.cert = num;
+      }
+      readCtl = null;
+      const found = ["date", "denomination", "grade", "cert"].filter((k) => d[k]).length;
+      applyLabel({ ...d, comments: "", confidence: found >= 3 ? "high" : "low" }, cert, null);
+    } catch (e) {
+      readCtl = null;
+      readMsg("Couldn't read the label on this phone. Type the details in, or try a sharper photo.", "warn");
+    } finally {
+      updateReadUI();
+    }
+    if (opts && opts.checkSides) await checkSidesNative();
+  }
+
+  // Which coin photo is the obverse? Unroll the legend around the rim into straight rows of text,
+  // read them, and look for the monarch's name and titles (or LIBERTY) versus CANADA, CENTS, DOLLAR.
+  const OBV_WORDS = ["GEORGIVS", "GEORGIUS", "GEORGE", "ELIZABETH", "EDWARDVS", "EDWARDUS", "EDWARD", "VICTORIA", "CHARLES",
+    "REGINA", "REX", "DEI", "GRATIA", "IMPERATOR", "IMP", "IND", "BRITT", "OMN", "LIBERTY"];
+  const REV_WORDS = ["CANADA", "CENTS", "CENT", "DOLLAR", "DOLLARS", "UNITED", "STATES", "AMERICA", "PLURIBUS", "HALF", "QUARTER", "DIME"];
+  function legendStrip(side) {
+    const D = 800, R = D / 2, src = coinCanvas(side, D);
+    const sd = src.getContext("2d").getImageData(0, 0, D, D).data;
+    const r0 = R * 0.66, r1 = R * 0.99, H = Math.round(r1 - r0), rm = (r0 + r1) / 2;
+    const seg = (150 * Math.PI) / 180, step = (120 * Math.PI) / 180, W = Math.round(seg * rm), gap = 16;
+    const out = document.createElement("canvas");
+    out.width = W; out.height = 6 * (H + gap);
+    const x = out.getContext("2d"), img = x.createImageData(W, out.height), p = img.data;
+    for (let i = 3; i < p.length; i += 4) p[i] = 255;
+    const sample = (sx, sy, o) => {
+      if (sx < 0 || sy < 0 || sx >= D - 1 || sy >= D - 1) return;
+      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+      for (let ch = 0; ch < 3; ch++) {
+        const i = (y0 * D + x0) * 4 + ch;
+        p[o + ch] = sd[i] * (1 - fx) * (1 - fy) + sd[i + 4] * fx * (1 - fy) + sd[i + D * 4] * (1 - fx) * fy + sd[i + D * 4 + 4] * fx * fy;
+      }
+    };
+    for (let row = 0; row < 6; row++) {
+      const flip = row >= 3, k = row % 3;
+      // top-arc legends read clockwise with letter tops outward; bottom-arc legends the other way
+      const t0 = flip ? Math.PI / 2 + seg / 2 + k * step : -Math.PI / 2 - seg / 2 + k * step;
+      for (let v = 0; v < H; v++) {
+        const rad = flip ? r0 + v : r1 - v, oy = row * (H + gap) + v;
+        for (let u = 0; u < W; u++) {
+          const t = flip ? t0 - u / rm : t0 + u / rm;
+          sample(R + rad * Math.cos(t), R + rad * Math.sin(t), (oy * W + u) * 4);
+        }
+      }
+    }
+    x.putImageData(img, 0, 0);
+    return out;
+  }
+  async function legendScore(side) {
+    const lines = await ocrLines(legendStrip(side), 1200);
+    const text = " " + lines.map((l) => l.text).join(" ").toUpperCase().replace(/[^A-Z]+/g, " ") + " ";
+    const has = (w) => text.includes(" " + w + " ") || (w.length >= 6 && text.includes(w));
+    const dg = /\bD\s?G\b/.test(text) ? 1 : 0;
+    return OBV_WORDS.filter(has).length + dg - REV_WORDS.filter(has).length;
+  }
+  async function checkSidesNative() {
+    const a = sides.obv, b = sides.rev;
+    if (!isNative || !a.src || !b.src) return;
+    try {
+      const sa = await legendScore(a), sb = await legendScore(b);
+      if (sides.obv !== a || sides.rev !== b) return;
+      if (sb > sa) {
+        sides.obv = b; sides.rev = a; bump(a); bump(b);
+        toast("Obverse and reverse were the wrong way round, so they've been swapped.");
+      }
+    } catch (e) { /* leave the order as picked */ }
+  }
+
   /* ---------- reading the certificate ---------- */
   let readCtl = null, readMsgText = "", readMsgKind = "";
   function readMsg(text, kind) { readMsgText = text; readMsgKind = kind || ""; updateReadUI(); }
@@ -693,15 +877,15 @@
     btn.disabled = reading || sampleState === "unavailable" || !sides.cert.src;
     if (btn.dataset.reading !== String(reading)) {
       btn.dataset.reading = String(reading);
-      btn.innerHTML = reading ? '<span class="spin" aria-hidden="true"></span>Reading the certificate…' : "Read certificate with Claude";
+      btn.innerHTML = reading ? '<span class="spin" aria-hidden="true"></span>Reading the certificate…' : isNative ? "Read certificate" : "Read certificate with Claude";
     }
     $("stopBtn").hidden = !reading;
     let text, kind = "";
     if (sampleState === "unavailable") text = "Certificate reading isn't available in this view. Type the details below.";
-    else if (reading) text = "Claude is reading the label. This can take up to a minute.";
+    else if (reading) text = isNative ? "Reading the label…" : "Claude is reading the label. This can take up to a minute.";
     else if (readMsgText) { text = readMsgText; kind = readMsgKind; }
-    else if (!sides.cert.src) text = "Add the certificate photo, then Claude can read it for you.";
-    else text = "Sends the certificate photo to Claude, on your own Claude account, to read the label.";
+    else if (!sides.cert.src) text = isNative ? "Add the certificate photo and it's read for you." : "Add the certificate photo, then Claude can read it for you.";
+    else text = isNative ? "Reads the label on your phone. Nothing is sent anywhere." : "Sends the certificate photo to Claude, on your own Claude account, to read the label.";
     if (note.textContent !== text) note.textContent = text;
     note.className = "note" + (kind ? " " + kind : "");
   }
@@ -732,6 +916,7 @@
   }
 
   async function readCert(opts) {
+    if (isNative) return readCertNative(opts);
     const s = await samplePromise;
     if (!s || sampleState === "unavailable") { updateReadUI(); return; }
     const cert = sides.cert;
@@ -806,7 +991,7 @@
       if (pick === coinCtx.b) { sides.obv = coinCtx.rev; sides.rev = coinCtx.obv; bump(sides.obv); bump(sides.rev); sidesNote = " Obverse and reverse were the wrong way round, so they've been swapped."; }
       else if (pick === coinCtx.a) sidesNote = " Obverse and reverse are in place.";
     }
-    if (!filled) readMsg("Claude couldn't make out the label. Try a sharper photo, or type the details in." + sidesNote, "warn");
+    if (!filled) readMsg("Couldn't make out the label. Try a sharper photo, or type the details in." + sidesNote, "warn");
     else if (str(d.confidence).toLowerCase() === "low") readMsg("Filled in, but parts of the label were hard to read. Check each field." + sidesNote, "warn");
     else readMsg(`Filled in from the ${str(d.service) || "certificate"} label. Check the fields before saving.` + sidesNote, "ok");
     markDirty();
@@ -994,6 +1179,17 @@
       let blob = plain;
       try { blob = await withMetadata(plain, values()); } catch (e) { blob = plain; }
       const name = fileName();
+      if (isNative) {
+        try {
+          const data = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(blob); });
+          await Vision.saveImage({ data, filename: name, folder: "Slab Plates" });
+          toast(`Saved to Pictures/Slab Plates`);
+          return "saved";
+        } catch (e) {
+          toast("Couldn't save the image. " + ((e && e.message) || "Try again."));
+          return "";
+        }
+      }
       const dl = await downloadsPromise;
       if (!dl) { showViewer(blob); return "viewer"; }
       try {
@@ -1062,24 +1258,33 @@
     return c.toDataURL("image/jpeg", 0.8);
   }
 
+  // Walk the session in the order taken. Each coin needs an obverse, a reverse and a certificate;
+  // a holder front gives two of those at once (PCGS, NGC). A role that's already filled, or a
+  // complete set, starts the next coin, so the certificate can be shot first or last.
   function groupItems(items) {
     const good = items.filter((x) => !x.bad), groups = [];
-    if (!good.some((x) => x.isCert)) {
-      for (let i = 0; i < good.length; i += 2) groups.push({ coins: good.slice(i, i + 2), cert: null });
-    } else if (good[0].isCert) {
-      // certificate shot first, then its coin
-      let cur = null;
-      for (const x of good) { if (x.isCert) { cur = { cert: x, coins: [] }; groups.push(cur); } else cur.coins.push(x); }
-    } else {
-      // coin shot first, certificate last
-      let coins = [];
-      for (const x of good) { if (x.isCert) { groups.push({ coins, cert: x }); coins = []; } else coins.push(x); }
-      if (coins.length) groups.push({ coins, cert: null });
+    const fresh = () => ({ obv: null, rev: null, cert: null });
+    let cur = fresh();
+    const close = () => { if (cur.obv || cur.rev || cur.cert) groups.push(cur); cur = fresh(); };
+    for (const x of good) {
+      if (x.role === "front") {
+        if (cur.obv && !cur.rev && !cur.cert) { cur.rev = cur.obv; cur.obv = null; } // back was shot first
+        if (cur.obv || cur.cert) close();
+        cur.obv = x; cur.cert = x;
+      } else if (x.role === "label") {
+        if (cur.cert) close();
+        cur.cert = x;
+      } else {
+        if (cur.obv && cur.rev) close();
+        if (!cur.obv) cur.obv = x; else cur.rev = x;
+      }
+      if (cur.obv && cur.rev && cur.cert) close();
     }
+    close();
     return groups.map((g) => ({
-      ...g, saved: false, read: false, state: null, fields: null, msg: "",
-      problem: !g.cert ? "No certificate photo found for this coin" : g.coins.length === 0 ? "No coin photos found for this certificate"
-        : g.coins.length === 1 ? "Only one coin photo found" : g.coins.length > 2 ? `${g.coins.length} coin photos found; using the first two` : "",
+      ...g, coins: [g.obv, g.rev].filter(Boolean), saved: false, read: false, state: null, fields: null, msg: "",
+      problem: !g.cert ? "No certificate photo found for this coin" : !g.obv ? "No coin photos found for this certificate"
+        : !g.rev ? "Only one coin photo found" : "",
     }));
   }
 
@@ -1107,7 +1312,8 @@
       if (!side) { failed++; items.push({ bad: true }); continue; }
       const g = graysFor(side);
       const res = await runDetect({ kind: "classify", small: g.small, big: g.big });
-      items.push({ file: list[n].f, res, isCert: !!res && res.certScore > 0, thumb: thumbOf(side, res) });
+      const role = await roleOf(side, res);
+      items.push({ file: list[n].f, res, role: role.role, rect: role.rect || null, thumb: thumbOf(side, res) });
       side.src = null; side.grays = null;
     }
     batch.groups = groupItems(items);
@@ -1147,18 +1353,22 @@
     markDirty();
     await tick();
     const plan = g.state ? g.state : {
-      obv: g.coins[0] && { file: g.coins[0].file, res: g.coins[0].res },
-      rev: g.coins[1] && { file: g.coins[1].file, res: g.coins[1].res },
-      cert: g.cert && { file: g.cert.file, res: g.cert.res },
+      obv: g.obv && { file: g.obv.file, res: g.obv.res },
+      rev: g.rev && { file: g.rev.file, res: g.rev.res },
+      cert: g.cert && { file: g.cert.file, res: g.cert.res, rect: g.cert.role === "front" ? g.cert.rect : null },
     };
+    const opened = new Map();
     for (const key of ["obv", "rev", "cert"]) {
       const it = plan[key];
       if (!it || !it.file) continue;
-      const side = await sideFromFile(it.file);
+      // a holder front is used twice; open it once
+      const seen = opened.get(it.file);
+      const side = seen ? sharedSide(seen) : await sideFromFile(it.file);
       if (batch.groups[batch.idx] !== g) return;
       if (!side) continue;
+      if (!seen) opened.set(it.file, side);
       if (it.params) Object.assign(side, it.params);
-      else if (key === "cert") applyRect(side, it.res && it.res.rect, null);
+      else if (key === "cert") applyRect(side, it.rect || (it.res && it.res.rect), null);
       else applyCoin(side, it.res && it.res.coin);
       sides[key] = side;
       bump(side);
@@ -1168,9 +1378,13 @@
     setActive("obv");
     disarm();
     $("plate").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    if (!g.read && sides.cert.src && sampleState === "ready") {
+    const both = !!(sides.obv.src && sides.rev.src);
+    if (!g.read && sides.cert.src && canRead()) {
       g.read = true;
-      readCert({ checkSides: !!(sides.obv.src && sides.rev.src) });
+      readCert({ checkSides: both && !g.state });
+    } else if (!g.read && isNative && both) {
+      g.read = true;
+      checkSidesNative();
     }
   }
 
@@ -1334,6 +1548,10 @@
   document.querySelectorAll('input[name="bg"]').forEach((r) => r.addEventListener("change", () => { if (r.checked) { look.bg = r.value; saveLook(); markDirty(); } }));
   $("capChk").addEventListener("change", (e) => { look.captions = e.target.checked; saveLook(); markDirty(); });
   window.addEventListener("resize", markDirty);
+  if (isNative) {
+    const hint = document.querySelector(".pick-all-text small");
+    if (hint) hint.textContent = "Select one coin's photos, or a whole session for a batch. PCGS and NGC coins need just a front and back. Labels are read on your phone, and the obverse is found from the coin's legend.";
+  }
 
   const fontsReady = document.fonts && document.fonts.load
     ? Promise.all([
