@@ -3,3 +3,7 @@ www/
 dist/
 *.p12
 !*.p12.enc
+
+# test pages and screenshots made while testing
+/*.html
+/*.png
