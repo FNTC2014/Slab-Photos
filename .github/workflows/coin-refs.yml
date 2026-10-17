@@ -18,7 +18,7 @@ jobs:
         run: |
           mkdir -p img out && zip -qr refs.zip img
           openssl rand -out key.bin 32
-          openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out out/img.zip.enc -pass file:key.bin
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out img.zip.enc -pass file:key.bin && split -b 40m img.zip.enc out/img.zip.enc.part- && ls -la out
           openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out out/img.key.enc
           cp fetch-summary.txt fetch-errors.txt out/
           git config user.name "github-actions" && git config user.email "actions@github.com"
