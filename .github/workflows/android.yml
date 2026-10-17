@@ -67,9 +67,27 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSPHRASE }}
           SIGNING_KEY_ALIAS: slabplates
           SIGNING_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSPHRASE }}
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          EBAY_RUNAME: ${{ secrets.EBAY_RUNAME }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee gradle.log
+          if [ -n "$EBAY_CLIENT_ID" ] && [ -n "$EBAY_CLIENT_SECRET" ] && [ -n "$EBAY_RUNAME" ]; then
+            echo "::notice::eBay keys included"
+          else
+            echo "::notice::eBay keys not set, so the eBay panel will say it isn't set up"
+          fi
+
+      - name: Report build errors
+        if: failure()
+        working-directory: android
+        run: |
+          if [ -f gradle.log ]; then
+            msg=$(grep -E "error:|warning: \[|What went wrong|e: |FAILED|Exception" -A2 gradle.log | head -40 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Gradle::${msg}"
+          fi
 
       - name: Publish the download
         if: steps.secret.outputs.signed == 'true'

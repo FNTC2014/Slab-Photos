@@ -214,6 +214,7 @@
   async function loadMany(fileList) {
     const files = [...fileList].filter((f) => !f.type || /^image\//.test(f.type));
     if (!files.length) { toast("Those files aren't photos. Choose JPGs or PNGs."); return; }
+    if (!batch.active && (files.length > 1 || soloListing.itemId)) newSoloListing();
     if (files.length === 1) { loadPhoto(files[0], !sides.obv.src ? "obv" : !sides.rev.src ? "rev" : "cert"); return; }
     const use = files.slice(0, 3);
     toast(files.length > 3 ? "Using the first three photos." : `Sorting ${use.length} photos…`);
@@ -669,6 +670,7 @@
     $("namePreview").textContent = fileName();
     syncControls();
     renderBatch();
+    renderListing();
   }
 
   let lastMode = "";
@@ -1217,6 +1219,7 @@
     sides.obv = blankSide(); sides.rev = blankSide(); sides.cert = blankSide();
     for (const k in FIELDS) $(FIELDS[k]).value = "";
     readMsgText = "";
+    newSoloListing();
     setActive("obv");
     window.scrollTo({ top: 0, behavior: "smooth" });
     toast("Cleared. Add the next coin's photos.");
@@ -1419,7 +1422,7 @@
     $("nextCoin").disabled = batch.busy || batch.idx >= n - 1;
     $("nextBtn").disabled = batch.busy || batch.idx >= n - 1;
     $("saveBtn").disabled = batch.busy || saving;
-    const key = batch.groups.map((x) => (x.saved ? "s" : "") + (x.problem ? "p" : "")).join(",") + "|" + batch.idx + "|" + batch.busy;
+    const key = batch.groups.map((x) => (x.saved ? "s" : "") + (x.listed ? "l" : "") + (x.problem ? "p" : "")).join(",") + "|" + batch.idx + "|" + batch.busy;
     if (key === batch.stripKey) return;
     batch.stripKey = key;
     const strip = $("strip");
@@ -1427,8 +1430,8 @@
     batch.groups.forEach((x, i) => {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "chipcoin" + (i === batch.idx ? " on" : "") + (x.saved ? " saved" : "") + (x.problem ? " problem" : "");
-      b.setAttribute("aria-label", `Coin ${i + 1}${x.saved ? ", saved" : ""}${x.problem ? ", needs a check" : ""}`);
+      b.className = "chipcoin" + (i === batch.idx ? " on" : "") + (x.saved ? " saved" : "") + (x.listed ? " listed" : "") + (x.problem ? " problem" : "");
+      b.setAttribute("aria-label", `Coin ${i + 1}${x.saved ? ", saved" : ""}${x.listed ? ", listed on eBay" : ""}${x.problem ? ", needs a check" : ""}`);
       if (i === batch.idx) b.setAttribute("aria-current", "true");
       b.disabled = batch.busy;
       const thumbSrc = (x.coins[0] && x.coins[0].thumb) || (x.cert && x.cert.thumb);
@@ -1556,6 +1559,396 @@
     if (files.length > 3) startBatch(files);
     else if (files.length) loadMany(files);
   });
+
+  /* ---------- eBay listing (phone app only) ----------
+     Listings go up through eBay's Trading API, so they're ordinary listings that can be edited in
+     Seller Hub or the eBay app afterwards. The native Ebay plugin holds the sign-in and signs calls. */
+  const Listing = typeof listingModule === "function" ? listingModule() : null;
+  const EbayNative = isNative && Listing ? capx.registerPlugin("Ebay") : null;
+  const EBAY_STORE = "slabplates.ebay.v1";
+  const API = "https://api.ebay.com";
+  const ebay = {
+    status: { configured: false, connected: false, user: "" },
+    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
+    cache: { ship: [], pay: [], ret: [], cats: [], store: [], at: 0 },
+    busy: false, loading: false, loadMsg: "", photoKey: "",
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(EBAY_STORE) || "{}");
+    if (saved.settings) Object.assign(ebay.settings, saved.settings);
+    if (saved.cache) Object.assign(ebay.cache, saved.cache);
+  } catch (e) { /* storage unavailable */ }
+  const saveEbay = () => { try { localStorage.setItem(EBAY_STORE, JSON.stringify({ settings: ebay.settings, cache: ebay.cache })); } catch (e) { /* ignore */ } };
+
+  const freshListing = () => ({
+    title: "", titleEdited: false, extras: null, price: "", bestOffer: true, accept: "", decline: "",
+    cat: "", catEdited: false, store: "", storeEdited: false, ship: "", spec: {}, desc: "", descEdited: false,
+    photos: { plate: true, obv: true, rev: true, cert: true }, uploads: {}, itemId: "", note: "", noteKind: "",
+  });
+  let soloListing = freshListing();
+  function curListing() {
+    if (batch.active) { const g = batch.groups[batch.idx]; if (g) return g.listing || (g.listing = freshListing()); }
+    return soloListing;
+  }
+  const newSoloListing = () => { soloListing = freshListing(); };
+  const priceOf = (s) => { const n = parseFloat(String(s || "").replace(/,/g, ".").replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : 0; };
+  const errText = (e) => (e && e.message) || "Something went wrong. Try again.";
+
+  function specsNow(L, v) {
+    return Listing.specificsOf(v).map(([name, auto]) => [name, Object.prototype.hasOwnProperty.call(L.spec, name) ? L.spec[name] : auto]);
+  }
+  function autoFill(L, v) {
+    if (!L.titleEdited) L.title = Listing.buildTitle(v, L.extras);
+    if (!L.descEdited) L.desc = Listing.buildDescription(v, ebay.settings.footer);
+    const cents = Listing.centsOf(v.denom);
+    if (!L.catEdited) L.cat = Listing.categoryFor(cents, ebay.cache.cats) || L.cat;
+    if (!L.storeEdited) L.store = Listing.storeCategoryFor(v.service, ebay.cache.store);
+    if (!L.ship || !ebay.cache.ship.some((p) => p.id === L.ship)) L.ship = ebay.settings.shipping;
+  }
+  const setVal = (id, val) => { const el = $(id); if (document.activeElement !== el && el.value !== val) el.value = val; };
+  function fillSelect(id, list, selected, emptyText) {
+    const el = $(id);
+    const key = JSON.stringify([list.map((x) => x.id + x.name), emptyText]);
+    if (el.dataset.key !== key) {
+      el.dataset.key = key;
+      el.textContent = "";
+      if (emptyText != null) { const o = document.createElement("option"); o.value = ""; o.textContent = emptyText; el.appendChild(o); }
+      for (const x of list) { const o = document.createElement("option"); o.value = x.id; o.textContent = x.path || x.name; el.appendChild(o); }
+    }
+    if (el.value !== (selected || "")) el.value = selected || "";
+  }
+
+  // listing photo previews: plate, obverse, reverse, certificate
+  const PHOTO_KEYS = [["plate", "Plate"], ["obv", "Obverse"], ["rev", "Reverse"], ["cert", "Certificate"]];
+  function buildPhotoPicker() {
+    const box = $("ePhotos");
+    for (const [k, label] of PHOTO_KEYS) {
+      const l = document.createElement("label"); l.className = "ephoto";
+      const i = document.createElement("input"); i.type = "checkbox"; i.id = "eph-" + k; i.checked = true;
+      const c = document.createElement("canvas"); c.width = c.height = 152; c.id = "ephc-" + k;
+      const s = document.createElement("span"); s.textContent = label;
+      l.append(i, c, s); box.appendChild(l);
+      i.addEventListener("change", () => { curListing().photos[k] = i.checked; renderListing(); });
+    }
+  }
+  function drawListingPhotos() {
+    const key = ["obv", "rev", "cert"].map((k) => sides[k].ver).join(".") + look.bg + look.captions;
+    if (key === ebay.photoKey) return;
+    ebay.photoKey = key;
+    for (const [k] of PHOTO_KEYS) {
+      const c = $("ephc-" + k), x = c.getContext("2d");
+      x.fillStyle = BG[look.bg].bg; x.fillRect(0, 0, c.width, c.height);
+      let src = null;
+      if (k === "plate") src = exampleMode() ? null : $("plate");
+      else if (sides[k].src) src = k === "cert" ? certCanvas(sides[k], 400) : coinCanvas(sides[k], 300);
+      if (!src) continue;
+      const s = Math.min(c.width / src.width, c.height / src.height);
+      x.drawImage(src, (c.width - src.width * s) / 2, (c.height - src.height * s) / 2, src.width * s, src.height * s);
+    }
+  }
+
+  function listingProblem(L) {
+    if (!ebay.status.connected) return "Connect your eBay account first.";
+    if (exampleMode()) return "Add the coin's photos first.";
+    if (!L.title.trim()) return "Add a title.";
+    if (priceOf(L.price) <= 0) return "Add a price.";
+    if (!L.cat) return ebay.cache.cats.length ? "Choose a category." : "eBay's categories haven't loaded. Open eBay settings and tap Reload from eBay.";
+    if (!L.ship || !ebay.settings.payment || !ebay.settings.returns) return "Choose your shipping, payment and return policies in eBay settings.";
+    if (!ebay.settings.location.trim() && !ebay.settings.postal.trim()) return "Add the item location in eBay settings.";
+    if (!PHOTO_KEYS.some(([k]) => L.photos[k] && (k === "plate" || sides[k].src))) return "Choose at least one photo.";
+    return "";
+  }
+
+  function renderListing() {
+    if (!EbayNative) return;
+    $("ebayPanel").hidden = false;
+    const st = ebay.status, L = curListing(), v = values();
+    $("ebaySetBtn").hidden = !st.connected;
+    $("ebayConnect").hidden = st.connected;
+    $("ebayForm").hidden = !st.connected;
+    $("ebayConnectBtn").hidden = !st.configured;
+    $("ebayConnectNote").textContent = !st.configured
+      ? "eBay isn't switched on in this copy of the app yet. It arrives in an update once the eBay developer keys are added."
+      : "Connect your eBay account to list each coin straight from here, with the plate and crops as its photos.";
+    if (!st.connected) return;
+    autoFill(L, v);
+    setVal("eTitle", L.title);
+    $("eTitleCount").textContent = `${L.title.length} / 80`;
+    $("eTitleReset").hidden = !L.titleEdited;
+    $("eTitleHint").textContent = L.titleEdited ? "Edited" : "Built from the details above";
+    setVal("eExtras", L.extras == null ? Listing.defaultExtras(Listing.gradeOf(v.grade)) : L.extras);
+    setVal("ePrice", L.price);
+    $("eOffer").checked = L.bestOffer;
+    $("eAcceptWrap").hidden = $("eDeclineWrap").hidden = !L.bestOffer;
+    setVal("eAccept", L.accept);
+    setVal("eDecline", L.decline);
+    fillSelect("eCat", ebay.cache.cats, L.cat, ebay.cache.cats.length ? "Choose a category" : "Categories not loaded");
+    fillSelect("eShip", ebay.cache.ship, L.ship, ebay.cache.ship.length ? "Choose a shipping policy" : "Policies not loaded");
+    $("eStoreWrap").hidden = !ebay.cache.store.length;
+    fillSelect("eStore", ebay.cache.store, L.store, "None");
+    const specs = specsNow(L, v);
+    specs.forEach(([name, val]) => setVal("spec-" + slug(name), val));
+    $("eSpecsSum").textContent = specs.map(([, val]) => val).filter(Boolean).join(" · ");
+    setVal("eDesc", L.desc);
+    $("eDescReset").hidden = !L.descEdited;
+    for (const [k] of PHOTO_KEYS) {
+      const i = $("eph-" + k), has = k === "plate" ? !exampleMode() : !!sides[k].src;
+      i.disabled = !has; i.checked = has && L.photos[k];
+    }
+    drawListingPhotos();
+    $("eNote").textContent = L.note;
+    $("eNote").className = "note" + (L.noteKind ? " " + L.noteKind : "");
+    $("eDone").hidden = !L.itemId;
+    $("eDoneText").textContent = L.itemId ? `Listed on eBay · item ${L.itemId}` : "";
+    $("eActions").hidden = !!L.itemId;
+    $("eCheck").disabled = $("ePost").disabled = ebay.busy;
+    $("ePost").textContent = ebay.busy ? "Working…" : "List on eBay";
+  }
+  function listNote(L, text, kind) { L.note = text; L.noteKind = kind || ""; renderListing(); }
+
+  function buildSpecInputs() {
+    const box = $("eSpecs");
+    for (const [name] of Listing.specificsOf({})) {
+      const w = document.createElement("div"); w.className = "field";
+      const id = "spec-" + slug(name);
+      const l = document.createElement("label"); l.htmlFor = id; l.textContent = name;
+      const i = document.createElement("input"); i.id = id; i.autocomplete = "off";
+      i.addEventListener("input", () => { curListing().spec[name] = i.value; renderListing(); });
+      w.append(l, i); box.appendChild(w);
+    }
+  }
+
+  // photos are made up front, so moving to another coin mid-upload can't mix them up
+  function jpegOf(canvas, q) { return canvas.toDataURL("image/jpeg", q || 0.92); }
+  function onBackground(src) {
+    const c = document.createElement("canvas"); c.width = src.width; c.height = src.height;
+    const x = c.getContext("2d"); x.fillStyle = BG[look.bg].bg; x.fillRect(0, 0, c.width, c.height); x.drawImage(src, 0, 0);
+    return c;
+  }
+  async function listingImages(L) {
+    await Promise.race([fontsReady, new Promise((r) => setTimeout(r, 2500))]);
+    const plateKey = ["obv", "rev", "cert"].map((k) => sides[k].ver).join(".") + look.bg + look.captions;
+    const out = [];
+    for (const [k] of PHOTO_KEYS) {
+      if (!L.photos[k]) continue;
+      if (k !== "plate" && !sides[k].src) continue;
+      if (k === "plate" && exampleMode()) continue;
+      const key = k === "plate" ? plateKey : String(sides[k].ver);
+      if (L.uploads[k] && L.uploads[k].key === key) { out.push({ k, key, url: L.uploads[k].url }); continue; }
+      let c;
+      if (k === "plate") { c = document.createElement("canvas"); renderPlate(c, P.S, false); }
+      else if (k === "cert") c = certCanvas(sides.cert, Math.min(1600, Math.max(400, Math.round(sides.cert.rw))));
+      else c = onBackground(coinCanvas(sides[k], Math.min(1600, Math.max(400, Math.round(sides[k].r * 2)))));
+      out.push({ k, key, data: jpegOf(c) });
+    }
+    return out;
+  }
+
+  async function runListing(verify) {
+    if (ebay.busy || !EbayNative) return;
+    const L = curListing(), v = values();
+    autoFill(L, v);
+    const problem = listingProblem(L);
+    if (problem) { listNote(L, problem, "warn"); return; }
+    if (!verify && L.itemId) return;
+    const g = batch.active ? batch.groups[batch.idx] : null;
+    ebay.busy = true;
+    listNote(L, "Preparing photos…");
+    try {
+      const imgs = await listingImages(L);
+      const specifics = specsNow(L, v);
+      const toSend = imgs.filter((x) => !x.url);
+      let n = 0;
+      for (const im of toSend) {
+        n++;
+        listNote(L, `Uploading photo ${n} of ${toSend.length}…`);
+        const res = await EbayNative.uploadImage({ data: im.data, filename: `${slug(L.title).slice(0, 40) || "coin"}-${im.k}.jpg` });
+        L.uploads[im.k] = { key: im.key, url: res.imageUrl };
+        im.url = res.imageUrl; im.data = null;
+      }
+      listNote(L, verify ? "Checking with eBay…" : "Listing on eBay…");
+      const xml = Listing.addItemXml({
+        title: L.title, description: L.desc, categoryId: L.cat, price: priceOf(L.price),
+        bestOffer: L.bestOffer, autoAccept: L.bestOffer ? priceOf(L.accept) : 0, autoDecline: L.bestOffer ? priceOf(L.decline) : 0,
+        location: ebay.settings.location, postalCode: ebay.settings.postal,
+        sku: [v.service, v.cert].filter(Boolean).join(" "), pictures: imgs.map((x) => x.url), specifics,
+        shippingPolicy: L.ship, paymentPolicy: ebay.settings.payment, returnPolicy: ebay.settings.returns, storeCategoryId: L.store,
+      }, verify);
+      const res = await EbayNative.request({ trading: verify ? "VerifyAddFixedPriceItem" : "AddFixedPriceItem", body: xml });
+      const r = Listing.tradingResult(new DOMParser().parseFromString(res.body || "", "text/xml"));
+      const said = (list) => list.map((e) => e.message).filter(Boolean).slice(0, 3).join(" ");
+      if (!r.ok) {
+        listNote(L, "eBay didn't accept it: " + (said(r.errors) || `no reason given (status ${res.status}).`), "warn");
+        return;
+      }
+      if (verify) {
+        listNote(L, `Ready to list. eBay's listing fees come to C$${r.fees.toFixed(2)}.` + (r.warnings.length ? " eBay notes: " + said(r.warnings) : ""), "ok");
+      } else {
+        L.itemId = r.itemId;
+        if (g) g.listed = true;
+        listNote(L, r.warnings.length ? "eBay notes: " + said(r.warnings) : "", "");
+        toast("Listed on eBay.");
+        markDirty();
+      }
+    } catch (e) {
+      listNote(L, errText(e), "warn");
+      if (e && e.code === "NOT_CONNECTED") refreshEbayStatus();
+    } finally {
+      ebay.busy = false;
+      renderListing();
+    }
+  }
+
+  async function api(path, opts) {
+    const res = await EbayNative.request({ url: API + path, method: "GET", ...(opts || {}) });
+    let body = null;
+    try { body = JSON.parse(res.body || "null"); } catch (e) { body = null; }
+    if (res.status >= 300) {
+      const m = body && body.errors && body.errors[0];
+      throw new Error((m && (m.longMessage || m.message)) || `eBay answered ${res.status}.`);
+    }
+    return body || {};
+  }
+  function walkStore(doc) {
+    const out = [];
+    const kids = (el, tag) => [...el.children].filter((c) => c.localName === tag);
+    const text = (el, tag) => { const c = kids(el, tag)[0]; return c ? c.textContent.trim() : ""; };
+    const visit = (el, trail) => {
+      const name = text(el, "Name"), id = text(el, "CategoryID");
+      const path = trail ? trail + " › " + name : name;
+      const children = kids(el, "ChildCategory");
+      if (id && name) out.push({ id, name, path });
+      children.forEach((c) => visit(c, path));
+    };
+    const root = doc.getElementsByTagName("CustomCategories")[0];
+    if (root) kids(root, "CustomCategory").forEach((c) => visit(c, ""));
+    return out;
+  }
+  function flattenCats(node, trail, out) {
+    if (!node) return out;
+    const name = node.category && node.category.categoryName, id = node.category && node.category.categoryId;
+    const kids = node.childCategoryTreeNodes || [];
+    if (node.leafCategoryTreeNode || !kids.length) { if (id) out.push({ id, name, path: trail ? trail + " › " + name : name }); }
+    else kids.forEach((k) => flattenCats(k, trail === null ? "" : (trail ? trail + " › " : "") + name, out));
+    return out;
+  }
+  async function loadAccountData() {
+    if (!EbayNative || !ebay.status.connected || ebay.loading) return;
+    ebay.loading = true;
+    ebay.loadMsg = "Loading from eBay…";
+    renderSheet();
+    const problems = [];
+    const q = "?marketplace_id=EBAY_CA";
+    await Promise.all([
+      api("/sell/account/v1/fulfillment_policy" + q).then((b) => { ebay.cache.ship = (b.fulfillmentPolicies || []).map((p) => ({ id: p.fulfillmentPolicyId, name: p.name })); }).catch((e) => problems.push("shipping policies: " + errText(e))),
+      api("/sell/account/v1/payment_policy" + q).then((b) => { ebay.cache.pay = (b.paymentPolicies || []).map((p) => ({ id: p.paymentPolicyId, name: p.name })); }).catch((e) => problems.push("payment policies: " + errText(e))),
+      api("/sell/account/v1/return_policy" + q).then((b) => { ebay.cache.ret = (b.returnPolicies || []).map((p) => ({ id: p.returnPolicyId, name: p.name })); }).catch((e) => problems.push("return policies: " + errText(e))),
+      (async () => {
+        const t = await api("/commerce/taxonomy/v1/get_default_category_tree_id" + q, { app: true });
+        const tree = t.categoryTreeId || "2";
+        const sub = await api(`/commerce/taxonomy/v1/category_tree/${encodeURIComponent(tree)}/get_category_subtree?category_id=3377`, { app: true });
+        const cats = flattenCats(sub.categorySubtreeNode, null, []);
+        if (cats.length) ebay.cache.cats = cats;
+      })().catch((e) => problems.push("categories: " + errText(e))),
+      EbayNative.request({ trading: "GetStore", body: '<?xml version="1.0" encoding="utf-8"?><GetStoreRequest xmlns="urn:ebay:apis:eBLBaseComponents"><CategoryStructureOnly>true</CategoryStructureOnly></GetStoreRequest>' })
+        .then((res) => { ebay.cache.store = walkStore(new DOMParser().parseFromString(res.body || "", "text/xml")); })
+        .catch(() => { ebay.cache.store = []; }),
+    ]);
+    // keep the saved choice while it still exists; otherwise start from eBay's first policy
+    const keep = (list, cur) => (!list.length || list.some((p) => p.id === cur) ? cur : list[0].id);
+    ebay.settings.shipping = keep(ebay.cache.ship, ebay.settings.shipping);
+    ebay.settings.payment = keep(ebay.cache.pay, ebay.settings.payment);
+    ebay.settings.returns = keep(ebay.cache.ret, ebay.settings.returns);
+    ebay.cache.at = Date.now();
+    saveEbay();
+    ebay.loading = false;
+    ebay.loadMsg = problems.length ? "Couldn't load " + problems.join("; ") : `Loaded ${ebay.cache.ship.length} shipping, ${ebay.cache.pay.length} payment and ${ebay.cache.ret.length} return policies, and ${ebay.cache.cats.length} coin categories.`;
+    renderSheet();
+    renderListing();
+  }
+
+  function renderSheet() {
+    if (!EbayNative) return;
+    const st = ebay.status;
+    $("acctName").textContent = st.connected ? (st.user ? `Connected as ${st.user}` : "Connected") : "Not connected";
+    $("acctBtn").textContent = st.connected ? "Disconnect" : "Connect";
+    fillSelect("sShip", ebay.cache.ship, ebay.settings.shipping, ebay.cache.ship.length ? null : "Not loaded");
+    fillSelect("sPay", ebay.cache.pay, ebay.settings.payment, ebay.cache.pay.length ? null : "Not loaded");
+    fillSelect("sRet", ebay.cache.ret, ebay.settings.returns, ebay.cache.ret.length ? null : "Not loaded");
+    setVal("sLoc", ebay.settings.location);
+    setVal("sPostal", ebay.settings.postal);
+    setVal("sFoot", ebay.settings.footer);
+    $("sRefresh").disabled = ebay.loading || !st.connected;
+    $("sNote").textContent = ebay.loadMsg;
+  }
+
+  async function refreshEbayStatus() {
+    try { ebay.status = await EbayNative.status(); } catch (e) { ebay.status = { configured: false, connected: false, user: "" }; }
+    renderListing(); renderSheet();
+  }
+  async function connectEbay() {
+    try {
+      const r = await EbayNative.connect();
+      ebay.status = { configured: true, connected: true, user: (r && r.user) || "" };
+      toast(r && r.user ? `Connected to eBay as ${r.user}.` : "Connected to eBay.");
+      renderListing(); renderSheet();
+      loadAccountData();
+    } catch (e) {
+      if (e && e.code === "CANCELLED") return;
+      toast(errText(e));
+    }
+  }
+
+  if (EbayNative) {
+    buildSpecInputs();
+    buildPhotoPicker();
+    $("ebayConnectBtn").addEventListener("click", connectEbay);
+    $("ebaySetBtn").addEventListener("click", () => { $("ebaySheet").hidden = false; renderSheet(); });
+    $("sheetClose").addEventListener("click", () => { $("ebaySheet").hidden = true; renderListing(); });
+    $("ebaySheet").addEventListener("click", (e) => { if (e.target === $("ebaySheet")) { $("ebaySheet").hidden = true; renderListing(); } });
+    $("acctBtn").addEventListener("click", async () => {
+      if (!ebay.status.connected) { connectEbay(); return; }
+      const b = $("acctBtn");
+      if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tap again to disconnect"; setTimeout(() => { delete b.dataset.armed; renderSheet(); }, 3500); return; }
+      delete b.dataset.armed;
+      try { await EbayNative.disconnect(); } catch (e) { /* already gone */ }
+      $("ebaySheet").hidden = true;
+      await refreshEbayStatus();
+      toast("eBay disconnected from this phone.");
+    });
+    $("sRefresh").addEventListener("click", loadAccountData);
+    $("sShip").addEventListener("change", (e) => { ebay.settings.shipping = e.target.value; saveEbay(); });
+    $("sPay").addEventListener("change", (e) => { ebay.settings.payment = e.target.value; saveEbay(); });
+    $("sRet").addEventListener("change", (e) => { ebay.settings.returns = e.target.value; saveEbay(); });
+    $("sLoc").addEventListener("input", (e) => { ebay.settings.location = e.target.value; saveEbay(); });
+    $("sPostal").addEventListener("input", (e) => { ebay.settings.postal = e.target.value; saveEbay(); });
+    $("sFoot").addEventListener("input", (e) => { ebay.settings.footer = e.target.value; saveEbay(); });
+    const onL = (id, ev, fn) => $(id).addEventListener(ev, (e) => { const L = curListing(); fn(L, e.target); if (!L.itemId) { L.note = ""; L.noteKind = ""; } renderListing(); });
+    onL("eTitle", "input", (L, t) => { if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, " "); L.title = t.value; L.titleEdited = true; });
+    $("eTitle").addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+    onL("eExtras", "input", (L, t) => { L.extras = t.value; });
+    onL("ePrice", "input", (L, t) => { L.price = t.value; });
+    onL("eOffer", "change", (L, t) => { L.bestOffer = t.checked; });
+    onL("eAccept", "input", (L, t) => { L.accept = t.value; });
+    onL("eDecline", "input", (L, t) => { L.decline = t.value; });
+    onL("eCat", "change", (L, t) => { L.cat = t.value; L.catEdited = true; });
+    onL("eShip", "change", (L, t) => { L.ship = t.value; });
+    onL("eStore", "change", (L, t) => { L.store = t.value; L.storeEdited = true; });
+    onL("eDesc", "input", (L, t) => { L.desc = t.value; L.descEdited = true; });
+    $("eTitleReset").addEventListener("click", () => { const L = curListing(); L.titleEdited = false; renderListing(); });
+    $("eDescReset").addEventListener("click", () => { const L = curListing(); L.descEdited = false; renderListing(); });
+    $("eSpecsReset").addEventListener("click", () => { curListing().spec = {}; renderListing(); });
+    $("eCheck").addEventListener("click", () => runListing(true));
+    $("ePost").addEventListener("click", () => runListing(false));
+    $("eView").addEventListener("click", () => {
+      const L = curListing();
+      if (L.itemId) EbayNative.openUrl({ url: `https://www.ebay.ca/itm/${encodeURIComponent(L.itemId)}` }).catch((e) => toast(errText(e)));
+    });
+    refreshEbayStatus().then(() => {
+      const stale = Date.now() - (ebay.cache.at || 0) > 24 * 3600 * 1000;
+      if (ebay.status.connected && (stale || !ebay.cache.cats.length || !ebay.cache.ship.length)) loadAccountData();
+    });
+  }
 
   /* ---------- toast ---------- */
   let toastTimer = 0;

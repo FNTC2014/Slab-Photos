@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(SlabVisionPlugin.class);
+        registerPlugin(EbayPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

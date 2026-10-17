@@ -182,11 +182,81 @@
           <label class="check"><input type="checkbox" id="capChk"><span><b>Obverse and reverse captions</b><small>Prints OBVERSE and REVERSE under the coins</small></span></label>
         </div>
       </section>
+
+      <section class="panel" id="ebayPanel" aria-labelledby="h-ebay" hidden>
+        <div class="panel-head">
+          <h2 id="h-ebay"><span class="step">5</span>eBay listing</h2>
+          <button type="button" class="btn small quiet" id="ebaySetBtn" hidden>eBay settings</button>
+        </div>
+        <div class="ebay-connect" id="ebayConnect">
+          <p class="note" id="ebayConnectNote">Connect your eBay account to list each coin straight from here, with the plate and crops as photos.</p>
+          <button type="button" class="btn ink" id="ebayConnectBtn">Connect eBay</button>
+        </div>
+        <div class="ebay-form" id="ebayForm" hidden>
+          <div class="fields">
+            <div class="field full">
+              <div class="label-row"><label for="eTitle">Title</label><span class="count" id="eTitleCount">0 / 80</span></div>
+              <textarea id="eTitle" class="one-line" rows="2" maxlength="80" autocomplete="off" spellcheck="false"></textarea>
+              <div class="field-tools"><span class="field-hint" id="eTitleHint">Built from the details above</span><button type="button" class="linkish" id="eTitleReset" hidden>Rebuild</button></div>
+            </div>
+            <div class="field full">
+              <label for="eExtras">Title ending</label>
+              <input id="eExtras" autocomplete="off" placeholder="Lustrous, Blast White, Scarce Variety">
+            </div>
+            <div class="field"><label for="ePrice">Price (C$)</label><input id="ePrice" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+            <div class="field"><label for="eCat">Category</label><select id="eCat"></select></div>
+            <label class="check full" id="eOfferWrap"><input type="checkbox" id="eOffer" checked><span><b>Accept offers</b><small>Best Offer, like your other listings</small></span></label>
+            <div class="field" id="eAcceptWrap"><label for="eAccept">Auto-accept at (C$)</label><input id="eAccept" inputmode="decimal" autocomplete="off" placeholder="Optional"></div>
+            <div class="field" id="eDeclineWrap"><label for="eDecline">Auto-decline below (C$)</label><input id="eDecline" inputmode="decimal" autocomplete="off" placeholder="Optional"></div>
+            <div class="field full"><label for="eShip">Shipping</label><select id="eShip"></select></div>
+            <div class="field full" id="eStoreWrap" hidden><label for="eStore">Store category</label><select id="eStore"></select></div>
+          </div>
+          <details class="specs" id="eSpecsBox">
+            <summary><span>Item specifics</span><small id="eSpecsSum"></small></summary>
+            <div class="fields" id="eSpecs"></div>
+            <button type="button" class="linkish" id="eSpecsReset">Refill from the details</button>
+          </details>
+          <div class="field full">
+            <div class="label-row"><label for="eDesc">Description</label><button type="button" class="linkish" id="eDescReset" hidden>Rebuild</button></div>
+            <textarea id="eDesc" rows="9"></textarea>
+          </div>
+          <div class="ephotos-wrap">
+            <span class="look-label">Photos</span>
+            <div class="ephotos" id="ePhotos" role="group" aria-label="Listing photos"></div>
+          </div>
+          <p class="note" id="eNote" aria-live="polite"></p>
+          <div class="ebay-done" id="eDone" hidden><span id="eDoneText">Listed</span><button type="button" class="btn small" id="eView">View on eBay</button></div>
+          <div class="ebay-actions" id="eActions">
+            <button type="button" class="btn" id="eCheck">Check listing</button>
+            <button type="button" class="btn primary" id="ePost">List on eBay</button>
+          </div>
+        </div>
+      </section>
     </section>
   </main>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<div class="sheet" id="ebaySheet" hidden role="dialog" aria-modal="true" aria-labelledby="h-ebayset">
+  <div class="sheet-inner">
+    <div class="sheet-head"><h2 id="h-ebayset">eBay settings</h2><button type="button" class="btn small quiet" id="sheetClose">Done</button></div>
+    <div class="sheet-body">
+      <div class="acct"><span id="acctName">Not connected</span><button type="button" class="btn small" id="acctBtn">Disconnect</button></div>
+      <p class="note">These come from your eBay account's business policies. They apply to every listing made here.</p>
+      <div class="fields">
+        <div class="field full"><label for="sShip">Usual shipping</label><select id="sShip"></select><small>Each listing can still pick another.</small></div>
+        <div class="field full"><label for="sPay">Payment</label><select id="sPay"></select></div>
+        <div class="field full"><label for="sRet">Returns</label><select id="sRet"></select></div>
+        <div class="field"><label for="sLoc">Item location</label><input id="sLoc" autocomplete="off" placeholder="Brantford, Ontario"></div>
+        <div class="field"><label for="sPostal">Postal code</label><input id="sPostal" autocomplete="off" autocapitalize="characters" placeholder="N3T 0A1"></div>
+        <div class="field full"><label for="sFoot">Description ending</label><textarea id="sFoot" rows="6"></textarea><small>Added under each coin's own lines. Blank lines start a new paragraph.</small></div>
+      </div>
+      <div class="btn-row"><button type="button" class="btn small" id="sRefresh">Reload from eBay</button></div>
+      <p class="note" id="sNote" aria-live="polite"></p>
+    </div>
+  </div>
+</div>
 
 <div class="viewer" id="viewer" hidden>
   <div class="viewer-inner">

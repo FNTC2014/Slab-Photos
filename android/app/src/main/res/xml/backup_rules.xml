@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The eBay sign-in stays on this phone: it's never copied to a backup or a new phone. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="ebay.xml" />
+</full-backup-content>

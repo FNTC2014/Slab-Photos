@@ -2,6 +2,9 @@ apply plugin: 'com.android.application'
 
 android {
     namespace = "com.fntc2014.slabplates"
+    buildFeatures {
+        buildConfig = true
+    }
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         applicationId "com.fntc2014.slabplates"
@@ -10,6 +13,11 @@ android {
         // The build number comes from the automatic build, so each version installs over the last.
         versionCode((System.getenv("BUILD_NUMBER") ?: "1").toInteger())
         versionName "1.0." + (System.getenv("BUILD_NUMBER") ?: "0")
+        // eBay app keys, from the repository's secrets. Empty means the eBay panel says it isn't set up.
+        def key = { String n -> "\"" + (System.getenv(n) ?: "").trim().replaceAll(/["\\]/, "") + "\"" }
+        buildConfigField "String", "EBAY_CLIENT_ID", key("EBAY_CLIENT_ID")
+        buildConfigField "String", "EBAY_CLIENT_SECRET", key("EBAY_CLIENT_SECRET")
+        buildConfigField "String", "EBAY_RUNAME", key("EBAY_RUNAME")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

@@ -11,7 +11,7 @@ const strip = (js) => js.replace(/\nif \(typeof module !== "undefined"\) module\
 
 const css = src("style.css");
 const body = src("body.html");
-const scripts = [strip(src("detect.js")), strip(src("labelparse.js")), src("app.js")]
+const scripts = [strip(src("detect.js")), strip(src("labelparse.js")), strip(src("listing.js")), src("app.js")]
   .map((js) => `<script>\n${js}</script>`).join("\n");
 // The app also needs Capacitor's small runtime to talk to the phone (on-device reading, saving).
 const capacitorRuntime = readFileSync(join(root, "node_modules", "@capacitor", "core", "dist", "capacitor.js"), "utf8")
