@@ -13,10 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Download the listed Commons photos
-        run: python3 tools/commons_fetch.py 2>fetch-errors.txt | tee fetch-summary.txt
+        run: python3 tools/commons_fetch.py > fetch-summary.txt 2>fetch-errors.txt || true
       - name: Encrypt for the requester and commit to this branch
         run: |
-          zip -qr refs.zip img
+          mkdir -p img out && zip -qr refs.zip img
           openssl rand -out key.bin 32
           openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out out/img.zip.enc -pass file:key.bin
           openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out out/img.key.enc
