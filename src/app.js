@@ -1990,7 +1990,7 @@
   const API = "https://api.ebay.com";
   const ebay = {
     status: { configured: false, connected: false, user: "" },
-    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", grams: "50", size: "6 x 9 x 1 in", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
+    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "N3R 7X3", grams: "50", size: "6 x 9 x 1 in", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
     cache: { ship: [], pay: [], ret: [], cats: [], store: [], at: 0 },
     busy: false, loading: false, loadMsg: "", photoKey: "",
   };
@@ -1998,6 +1998,7 @@
     const saved = JSON.parse(localStorage.getItem(EBAY_STORE) || "{}");
     if (saved.settings) Object.assign(ebay.settings, saved.settings);
     // the first defaults (120 g, 19 x 13 x 3 cm) were a guess; your parcels are 50 g, 6 x 9 x 1 in
+    if (!String(ebay.settings.postal || "").trim()) ebay.settings.postal = "N3R 7X3";
     if (ebay.settings.grams === "120" && ebay.settings.size === "19 x 13 x 3") { ebay.settings.grams = "50"; ebay.settings.size = "6 x 9 x 1 in"; }
     if (saved.cache) Object.assign(ebay.cache, saved.cache);
   } catch (e) { /* storage unavailable */ }
