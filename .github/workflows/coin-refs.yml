@@ -12,39 +12,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Probe
+      - name: List Canadian coin photos on Wikimedia Commons
         run: |
-          for ua in "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" "SlabPlates/1.0"; do
-            for u in https://en.numista.com/catalogue/photos/canada/1017-original.jpg https://en.numista.com/catalogue/photos/canada/1017-180.jpg https://en.numista.com/440; do
-              echo "== $u ($ua)"; curl -sS -A "$ua" -o /dev/null -D - --max-time 30 "$u" 2>&1 | head -14 || true
-            done
-          done > probe.txt 2>&1
-          cat probe.txt
-      - name: Download obverse and reverse photos for each type
+          mkdir -p out
+          python3 tools/commons_list.py "Category:Coins of Canada" 2>out/list-errors.txt | tee out/list-summary.txt
+      - name: Commit the list
         run: |
-          mkdir -p refs
-          UA="SlabPlates/1.0 (personal coin photo app; github.com/FNTC2014/Slab-Photos)"
-          while IFS='|' read -r id denom y0 y1 name obv rev; do
-            [ -z "$id" ] && continue
-            for pair in "obv:$obv" "rev:$rev"; do
-              side="${pair%%:*}"; img="${pair#*:}"; ok=""
-              for size in original 400 180; do
-                url="https://en.numista.com/catalogue/photos/canada/${img}-${size}.jpg"
-                if curl -fsSL -A "$UA" --retry 2 --max-time 60 -o "refs/${id}-${side}.jpg" "$url"; then
-                  echo "${id}|${side}|${size}|$(stat -c %s refs/${id}-${side}.jpg)"; ok=1; break
-                fi
-              done
-              [ -z "$ok" ] && echo "${id}|${side}|FAILED"
-              sleep 1
-            done
-          done < tools/coin-refs.txt | tee refs/log.txt
-          cp tools/coin-refs.txt refs/
-      - name: Encrypt for the requester and commit to this branch
-        run: |
-          zip -qr refs.zip refs
-          openssl rand -out key.bin 32
-          openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out refs.zip.enc -pass file:key.bin
-          openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out key.bin.enc
-          mkdir -p out && mv refs.zip.enc key.bin.enc out/ && cp probe.txt out/
           git config user.name "github-actions" && git config user.email "actions@github.com"
-          git add out && git commit -qm "Encrypted coin reference photos [skip ci]" && git push -q
+          git add out && git commit -qm "Commons file list [skip ci]" && git push -q
