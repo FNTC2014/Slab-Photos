@@ -183,12 +183,18 @@
         </div>
       </section>
 
-      <section class="panel" id="ebayPanel" aria-labelledby="h-ebay" hidden>
+      <section class="panel" id="ebayPanel" aria-labelledby="h-ebay">
         <div class="panel-head">
-          <h2 id="h-ebay"><span class="step">5</span>eBay listing</h2>
-          <button type="button" class="btn small quiet" id="ebaySetBtn" hidden>eBay settings</button>
+          <h2 id="h-ebay"><span class="step">5</span>Sell</h2>
+          <div class="seg" role="radiogroup" aria-label="Where to sell">
+            <input type="radio" name="sellTab" id="tabEbayR" value="ebay" checked><label for="tabEbayR">eBay</label>
+            <input type="radio" name="sellTab" id="tabFbR" value="fb"><label for="tabFbR">Facebook</label>
+          </div>
         </div>
-        <div class="ebay-connect" id="ebayConnect">
+        <div class="sell-tab" id="tabEbay">
+        <div class="tab-tools"><button type="button" class="btn small quiet" id="ebaySetBtn" hidden>eBay settings</button></div>
+        <p class="note" id="ebayWebNote" hidden>Listing on eBay works in the phone app.</p>
+        <div class="ebay-connect" id="ebayConnect" hidden>
           <p class="note" id="ebayConnectNote">Connect your eBay account to list each coin straight from here, with the plate and crops as photos.</p>
           <button type="button" class="btn ink" id="ebayConnectBtn">Connect eBay</button>
           <div class="ebay-err" id="ebayConnectErr" hidden>
@@ -235,6 +241,37 @@
             <button type="button" class="btn" id="eCheck">Check listing</button>
             <button type="button" class="btn primary" id="ePost">List on eBay</button>
           </div>
+        </div>
+        </div>
+
+        <div class="sell-tab" id="tabFb" hidden>
+          <div class="fields">
+            <div class="field"><label for="fbSb">Starting bid ($)</label><input id="fbSb" inputmode="decimal" autocomplete="off" placeholder="50"></div>
+            <div class="field"><label for="fbBin">Buy it now ($)</label><input id="fbBin" inputmode="decimal" autocomplete="off" placeholder="Optional"></div>
+            <div class="field full"><label for="fbBlurb">Your words</label><input id="fbBlurb" autocomplete="off" placeholder="A nice GEM fully lustrous example"></div>
+          </div>
+          <p class="note" id="fbTrend" aria-live="polite"></p>
+          <div class="field full">
+            <div class="label-row"><label for="fbText">Post</label><button type="button" class="linkish" id="fbReset" hidden>Rebuild</button></div>
+            <textarea id="fbText" rows="14"></textarea>
+          </div>
+          <div class="btn-row"><button type="button" class="btn" id="fbCopy">Copy post text</button></div>
+          <div class="ephotos-wrap">
+            <span class="look-label">Photos · square, 2048 px, in posting order</span>
+            <div class="ephotos" id="fbPhotos" role="group" aria-label="Facebook photos"></div>
+            <p class="note" id="fbPhotoNote"></p>
+          </div>
+          <div class="btn-row"><button type="button" class="btn primary" id="fbSave">Save photos</button></div>
+          <p class="note" id="fbNote" aria-live="polite"></p>
+          <details class="specs" id="fbSetBox">
+            <summary><span>Facebook settings</span><small id="fbSetSum"></small></summary>
+            <div class="fields">
+              <div class="field full"><label for="fbInc">Increments</label><input id="fbInc" autocomplete="off"></div>
+              <div class="field full"><label for="fbEnd">Post ending</label><textarea id="fbEnd" rows="10"></textarea><small>Shipping, insurance, payment and your email, added to every post.</small></div>
+            </div>
+            <div class="btn-row"><button type="button" class="btn small" id="fbTrendLoad">Load Trends file</button><input type="file" id="fbTrendInput" accept=".json,application/json" hidden></div>
+            <p class="note" id="fbTrendInfo"></p>
+          </details>
         </div>
       </section>
     </section>

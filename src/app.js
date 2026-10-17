@@ -2008,6 +2008,7 @@
     title: "", titleEdited: false, extras: null, price: "", bestOffer: true, accept: "", decline: "",
     cat: "", catEdited: false, store: "", storeEdited: false, ship: "", spec: {}, desc: "", descEdited: false,
     photos: { plate: true, obv: true, rev: true, cert: true, oobv: true, orev: true, ocert: true }, uploads: {}, itemId: "", note: "", noteKind: "",
+    fb: { sb: "", bin: "", blurb: "", text: "", edited: false, photos: { plate: true, obv: false, rev: false, oobv: true, orev: true, ocert: true } },
   });
   let soloListing = freshListing();
   function curListing() {
@@ -2167,8 +2168,8 @@
   }
 
   function renderListing() {
-    if (!EbayNative) return;
-    $("ebayPanel").hidden = false;
+    renderSell();
+    if (!EbayNative || sellTab !== "ebay") return;
     const st = ebay.status, L = curListing(), v = values();
     $("ebaySetBtn").hidden = !st.connected;
     $("ebayConnect").hidden = st.connected;
@@ -2479,6 +2480,186 @@
       if (ebay.status.connected && (stale || !ebay.cache.cats.length || !ebay.cache.ship.length)) loadAccountData();
     });
   }
+
+  /* ---------- Facebook group posts ----------
+     The post text to copy and paste, and square photos to save one file each. Square suits a
+     Facebook group's photo grid: 4 photos with a square first one make a clean 2 × 2 grid.
+     Trends values come from a Trends file loaded on the phone (Canadian Coin News Trends). */
+  const Trends = typeof trendsModule === "function" ? trendsModule() : null;
+  const FB_STORE = "slabplates.fb.v1", TRENDS_STORE = "slabplates.trends.v1", TAB_STORE = "slabplates.sellTab";
+  const FB_ENDING = ["Shipping:", "", "Lettermail (Video Drop) - $5", "", "Registered - $16", "", "Additional coins - $1 each", "",
+    "I offer insurance at $1.50 per $100 up to $5000 on any tracked shipment. This is outside Canada Post insurance - send me a message for details prior to shipping.", "",
+    "EMT within 24hrs of winning.", "nick.oulton@farnorthtradingco.com"].join("\n");
+  const fbSet = { inc: "$1 ($5 over $100)", ending: FB_ENDING };
+  let trendsData = null;
+  try {
+    Object.assign(fbSet, JSON.parse(localStorage.getItem(FB_STORE) || "{}"));
+    const t = JSON.parse(localStorage.getItem(TRENDS_STORE) || "null");
+    if (Trends && Trends.valid(t)) trendsData = t;
+  } catch (e) { /* defaults */ }
+  const saveFb = () => { try { localStorage.setItem(FB_STORE, JSON.stringify(fbSet)); } catch (e) { /* ignore */ } };
+  let sellTab = "ebay";
+  try { sellTab = localStorage.getItem(TAB_STORE) || (EbayNative ? "ebay" : "fb"); } catch (e) { sellTab = EbayNative ? "ebay" : "fb"; }
+  const FB_PHOTOS = [["plate", "Plate"], ["oobv", "Obverse photo"], ["orev", "Reverse photo"], ["ocert", "Label photo"], ["obv", "Obverse"], ["rev", "Reverse"]];
+  const fbOf = () => { const L = curListing(); return L.fb || (L.fb = freshListing().fb); };
+  const SHORT_VARIETY = { "large beads": "LB", "small beads": "SB", "maple leaf": "ML", "pointed 7": "P7", "blunt 7": "B7" };
+
+  function trendFor(v) {
+    if (!Trends) return { reason: "" };
+    if (!trendsData) return { reason: "No Trends file loaded yet. Load it in Facebook settings below." };
+    const d = Listing.dateOf(v.date), mint = (String(v.date).match(/\b(1[5-9]\d\d|20\d\d)\s*-?\s*([HC])\b/) || [])[2] || "";
+    const variety = Listing.varietyOf(v).replace(/^[HC]\b\s*/, "");
+    return Trends.lookup(trendsData, { denom: denomKey(v.denom), year: d.year, mint, variety, grade: v.grade });
+  }
+  function buildFbText(v, fb, trend) {
+    const clean = (x) => String(x || "").replace(/\s+/g, " ").trim();
+    if (![v.date, v.denom, v.grade].some(clean)) return "";
+    const d = Listing.dateOf(v.date), g = Listing.gradeOf(v.grade), variety = Listing.varietyOf(v);
+    const cents = Listing.centsOf(v.denom), service = clean(v.service).toUpperCase();
+    const denom = cents == null ? clean(v.denom) : cents >= 100 && cents % 100 === 0 ? "$" + cents / 100 : cents + "¢";
+    const short = SHORT_VARIETY[variety.toLowerCase()] || variety;
+    const head = "🚨Auction🚨 " + [d.year + (d.suffix && !variety ? " " + d.suffix : ""), short, denom, service, g.compact].filter(Boolean).join(" ");
+    const what = [d.year, variety || denom].filter(Boolean).join(" ");
+    const end = (t) => (t && !/[.!?]$/.test(t) ? t + "." : t);
+    let line = end(what) + " " + end([service ? service + " Graded" : "", g.compact].filter(Boolean).join(" "));
+    if (clean(fb.blurb)) line += " " + end(clean(fb.blurb));
+    if (trend && trend.text) line += ` Trends at ${trend.text}`;
+    const money = (x) => { const t = clean(x).replace(/^\$\s*/, ""); return t ? "$" + t : "$"; };
+    const parts = [head, line.trim(), `SB: ${money(fb.sb)}`, `Increments: ${clean(fbSet.inc)}`];
+    if (clean(fb.bin)) parts.push(`BIN: ${money(fb.bin)}`);
+    if (String(fbSet.ending || "").trim()) parts.push(String(fbSet.ending).trim());
+    return parts.join("\n\n");
+  }
+  const fbAvailable = (k) => (k === "obv" || k === "rev" ? !!sides[k].src : photoAvailable(k));
+  function fbCanvas(k, size) {
+    if (k === "plate") { const c = document.createElement("canvas"); renderPlate(c, size, false); return c; }
+    if (k === "obv" || k === "rev") return onBackground(coinCanvas(sides[k], size));
+    return originalCanvas(sides[ORIGINAL_OF[k]], size);
+  }
+  let fbThumbKey = "";
+  function buildFbPicker() {
+    const box = $("fbPhotos");
+    for (const [k, label] of FB_PHOTOS) {
+      const l = document.createElement("label"); l.className = "ephoto";
+      const i = document.createElement("input"); i.type = "checkbox"; i.id = "fbp-" + k;
+      const c = document.createElement("canvas"); c.width = c.height = 152; c.id = "fbc-" + k;
+      const sp = document.createElement("span"); sp.textContent = label; sp.id = "fbl-" + k;
+      l.append(i, c, sp); box.appendChild(l);
+      i.addEventListener("change", () => { fbOf().photos[k] = i.checked; renderListing(); });
+    }
+  }
+  function renderSell() {
+    $("tabEbayR").checked = sellTab === "ebay"; $("tabFbR").checked = sellTab === "fb";
+    $("tabEbay").hidden = sellTab !== "ebay"; $("tabFb").hidden = sellTab !== "fb";
+    $("ebayWebNote").hidden = !!EbayNative;
+    if (!EbayNative) { $("ebayConnect").hidden = true; $("ebayForm").hidden = true; $("ebaySetBtn").hidden = true; }
+    if (sellTab !== "fb") return;
+    const fb = fbOf(), v = values(), trend = trendFor(v);
+    if (!fb.edited) fb.text = buildFbText(v, fb, trend);
+    setVal("fbSb", fb.sb); setVal("fbBin", fb.bin); setVal("fbBlurb", fb.blurb); setVal("fbText", fb.text);
+    $("fbReset").hidden = !fb.edited;
+    const src = trendsData ? `CCN Trends, ${trendsData.issue}` : "";
+    $("fbTrend").textContent = trend.text ? `Trends ${trend.text} · ${trend.row}, ${trend.col} (${src})` : trend.reason || "";
+    $("fbTrend").className = "note" + (trend.text ? " ok" : trend.reason && trendsData ? " warn" : "");
+    // photos
+    const key = ["obv", "rev", "cert"].map((k) => sides[k].ver + ":" + sides[k].photoId).join(".") + look.bg + look.captions;
+    for (const [k, label] of FB_PHOTOS) {
+      const has = fbAvailable(k) && !(k === "plate" && exampleMode()), i = $("fbp-" + k);
+      i.disabled = !has; i.checked = has && !!fb.photos[k];
+      i.parentElement.hidden = !has && k !== "plate";
+      $("fbl-" + k).textContent = photoLabel(k, label);
+    }
+    if (key !== fbThumbKey) {
+      fbThumbKey = key;
+      for (const [k] of FB_PHOTOS) {
+        const c = $("fbc-" + k), x = c.getContext("2d");
+        x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
+        if (!fbAvailable(k) || (k === "plate" && exampleMode())) continue;
+        try { x.drawImage(k === "plate" ? $("plate") : fbCanvas(k, 400), 0, 0, c.width, c.height); } catch (e) { /* not ready */ }
+      }
+    }
+    const n = FB_PHOTOS.filter(([k]) => $("fbp-" + k).checked).length;
+    $("fbPhotoNote").textContent = n === 0 ? "Pick the photos to post." : n === 2 || n === 3
+      ? `${n} photos: Facebook shows these as tall tiles and crops them. 1, 4 or 5 photos keep them square.` : `${n} photo${n > 1 ? "s" : ""}, saved in this order.`;
+    $("fbSave").textContent = n > 1 ? `Save all ${n} photos` : "Save photo";
+    $("fbSave").disabled = !n || fbSaving;
+    // settings
+    setVal("fbInc", fbSet.inc); setVal("fbEnd", fbSet.ending);
+    const hasEmail = /\S+@\S+\.\S+/.test(fbSet.ending || "");
+    $("fbSetSum").textContent = hasEmail ? (trendsData ? "Trends loaded" : "No Trends file") : "Add your email to the ending";
+    $("fbNote").textContent = hasEmail ? $("fbNote").dataset.msg || "" : "The post ending has no email address. The group needs it at the end of each post: add it in Facebook settings.";
+    $("fbNote").className = "note" + (hasEmail ? "" : " warn");
+    $("fbTrendInfo").textContent = trendsData
+      ? `Trends: ${trendsData.source}, ${trendsData.issue} (${trendsData.sections.reduce((a, s2) => a + s2.r.length, 0)} rows). Load a newer file when one comes out.`
+      : "Load the Trends file to fill in Trends values. It stays on this phone.";
+  }
+  let fbSaving = false;
+  async function saveFbPhotos() {
+    const fb = fbOf(), keys = FB_PHOTOS.map(([k]) => k).filter((k) => $("fbp-" + k).checked && fbAvailable(k));
+    if (!keys.length || fbSaving) return;
+    fbSaving = true; renderListing();
+    const base = fileName().replace(/\.jpg$/, "");
+    let done = 0;
+    try {
+      await Promise.race([fontsReady, new Promise((r) => setTimeout(r, 2500))]);
+      const dl = isNative ? null : await downloadsPromise;
+      for (const [n, k] of keys.entries()) {
+        $("fbNote").dataset.msg = `Saving photo ${n + 1} of ${keys.length}…`; renderListing();
+        const c = fbCanvas(k, 2048), name = `${base} fb${n + 1} ${slug(photoLabel(k, FB_PHOTOS.find((p) => p[0] === k)[1]))}.jpg`;
+        const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+        if (isNative) {
+          const data = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(blob); });
+          await Vision.saveImage({ data, filename: name, folder: "Slab Plates/Facebook" });
+        } else if (dl) {
+          await dl.save({ filename: name, data: blob });
+        } else {
+          const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        }
+        done++;
+      }
+      $("fbNote").dataset.msg = isNative ? `Saved ${done} photo${done > 1 ? "s" : ""} to Pictures/Slab Plates/Facebook, each its own file.` : `Saved ${done} photo${done > 1 ? "s" : ""}.`;
+    } catch (e) {
+      $("fbNote").dataset.msg = `Saved ${done} of ${keys.length}. ${errText(e)}`;
+    } finally {
+      fbSaving = false; renderListing();
+    }
+  }
+  async function copyFbText() {
+    const t = $("fbText").value;
+    try { await navigator.clipboard.writeText(t); toast("Post text copied."); return; } catch (e) { /* fall back */ }
+    const ta = $("fbText"); ta.focus(); ta.select();
+    try { document.execCommand("copy"); toast("Post text copied."); } catch (e) { toast("Select the text and copy it."); }
+  }
+  buildFbPicker();
+  for (const id of ["tabEbayR", "tabFbR"]) $(id).addEventListener("change", (e) => {
+    sellTab = e.target.value; try { localStorage.setItem(TAB_STORE, sellTab); } catch (er) { /* ignore */ }
+    fbThumbKey = ""; renderListing();
+  });
+  const onFb = (id, fn) => $(id).addEventListener("input", (e) => { fn(fbOf(), e.target.value); $("fbNote").dataset.msg = ""; renderListing(); });
+  onFb("fbSb", (fb, val) => { fb.sb = val; });
+  onFb("fbBin", (fb, val) => { fb.bin = val; });
+  onFb("fbBlurb", (fb, val) => { fb.blurb = val; });
+  onFb("fbText", (fb, val) => { fb.text = val; fb.edited = true; });
+  onFb("fbInc", (fb, val) => { fbSet.inc = val; saveFb(); });
+  onFb("fbEnd", (fb, val) => { fbSet.ending = val; saveFb(); });
+  $("fbReset").addEventListener("click", () => { fbOf().edited = false; renderListing(); });
+  $("fbCopy").addEventListener("click", copyFbText);
+  $("fbSave").addEventListener("click", saveFbPhotos);
+  $("fbTrendLoad").addEventListener("click", () => $("fbTrendInput").click());
+  $("fbTrendInput").addEventListener("change", async () => {
+    const f = $("fbTrendInput").files && $("fbTrendInput").files[0];
+    $("fbTrendInput").value = "";
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (!Trends || !Trends.valid(data)) throw new Error("That isn't a Slab Plates Trends file.");
+      trendsData = data;
+      try { localStorage.setItem(TRENDS_STORE, JSON.stringify(data)); } catch (e) { toast("Loaded for now, but it couldn't be kept on this phone."); }
+      toast(`Trends loaded: ${data.issue}.`);
+    } catch (e) { toast(errText(e)); }
+    renderListing();
+  });
 
   /* ---------- toast ---------- */
   let toastTimer = 0;
