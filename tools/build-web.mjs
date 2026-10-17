@@ -50,6 +50,7 @@ ${css}</style>
 </head><body>
 ${body}
 <script>
+window.SLAB_VERSION = ${JSON.stringify(process.env.APP_VERSION || "dev")};
 ${capacitorRuntime}</script>
 ${scripts}
 </body></html>

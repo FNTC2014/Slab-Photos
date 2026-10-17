@@ -42,6 +42,8 @@ jobs:
           fi
 
       - name: Build the page
+        env:
+          APP_VERSION: 1.0.${{ github.run_number }}
         run: |
           npm ci
           npm run build
@@ -74,8 +76,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp android/app/build/outputs/apk/release/app-release.apk SlabPlates.apk
-          gh release create "v1.0.${{ github.run_number }}" SlabPlates.apk \
+          APK="SlabPlates-1.0.${{ github.run_number }}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "v1.0.${{ github.run_number }}" "$APK" \
             --title "Slab Plates 1.0.${{ github.run_number }}" \
-            --notes "On your phone, download SlabPlates.apk below and open it to install or update. Built from ${{ github.sha }}." \
+            --notes "On your phone, download $APK below and open it to install or update. The version number shows at the top of the app. Built from ${{ github.sha }}." \
             --latest

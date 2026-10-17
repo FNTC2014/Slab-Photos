@@ -72,6 +72,12 @@ h1 {
   text-wrap: balance;
 }
 .lede { margin: 0; color: var(--muted); max-width: 62ch; font-size: 14.5px; }
+.version { margin-left: 6px; font: 400 12px var(--font-mono); white-space: nowrap; }
+.update { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; padding: 10px 12px; border-radius: 12px; border: 1.5px solid var(--accent); background: var(--accent-soft); }
+.update span { display: grid; gap: 2px; }
+.update b { font-weight: 600; font-size: 14.5px; }
+.update small { color: var(--muted); font-size: 12.5px; }
+.update .btn { text-decoration: none; flex: none; }
 
 /* Layout */
 .layout { display: grid; gap: 20px; align-items: start; }

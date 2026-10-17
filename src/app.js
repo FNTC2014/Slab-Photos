@@ -1649,6 +1649,26 @@
   document.querySelectorAll('input[name="bg"]').forEach((r) => r.addEventListener("change", () => { if (r.checked) { look.bg = r.value; saveLook(); markDirty(); } }));
   $("capChk").addEventListener("change", (e) => { look.captions = e.target.checked; saveLook(); markDirty(); });
   window.addEventListener("resize", markDirty);
+  /* ---------- version and updates (phone app only) ---------- */
+  if (isNative && window.SLAB_VERSION) {
+    const mine = String(window.SLAB_VERSION);
+    $("appVersion").textContent = "Version " + mine;
+    $("appVersion").hidden = false;
+    const num = (v) => String(v).replace(/^v/, "").split(".").map((x) => parseInt(x, 10) || 0);
+    const newer = (a, b) => { const x = num(a), y = num(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+    if (mine !== "dev") {
+      fetch("https://api.github.com/repos/FNTC2014/Slab-Photos/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((rel) => {
+          if (!rel || !rel.tag_name || !newer(rel.tag_name, mine)) return;
+          const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name));
+          $("updateTitle").textContent = `Version ${rel.tag_name.replace(/^v/, "")} is ready`;
+          if (apk) $("updateLink").href = apk.browser_download_url;
+          $("updateBar").hidden = false;
+        })
+        .catch(() => { /* offline: try again next time */ });
+    }
+  }
   if (isNative) {
     $("addNote").textContent = "Photos are sorted for you. PCGS and NGC coins need just a holder front and back. Labels are read on your phone, and the obverse is found from the coin's legend.";
   }
