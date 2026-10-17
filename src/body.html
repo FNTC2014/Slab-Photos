@@ -1,0 +1,163 @@
+<div class="app">
+  <header class="masthead">
+    <div class="brand"><span class="mark" aria-hidden="true"></span><h1>Slab Plates</h1></div>
+    <p class="lede">Obverse and reverse side by side with the certificate underneath, on a square plate. Photos keep their original colour.</p>
+  </header>
+
+  <main class="layout">
+    <section class="stage" aria-label="Plate preview">
+      <div class="plate-frame">
+        <canvas id="plate" role="img" aria-label="Preview of the finished plate"></canvas>
+        <span class="chip" id="exampleChip">Example</span>
+      </div>
+      <div class="plate-meta"><span id="plateSize">2000 × 2000 px · JPG</span><span id="plateHint">Add your photos to replace the example</span></div>
+      <div class="batch" id="batchBar" hidden>
+        <div class="batch-head">
+          <button type="button" class="btn small nav" id="prevCoin" aria-label="Previous coin">‹</button>
+          <div class="batch-title" aria-live="polite"><b id="batchCount">Batch</b><small id="batchSub"></small></div>
+          <button type="button" class="btn small nav" id="nextCoin" aria-label="Next coin">›</button>
+        </div>
+        <div class="strip" id="strip" role="group" aria-label="Coins in this batch"></div>
+        <div class="batch-foot"><span class="batch-tip">Shoot each coin's three photos together, certificate first or last.</span><button type="button" class="btn small quiet" id="endBatch">End batch</button></div>
+      </div>
+      <div class="actions">
+        <canvas class="thumb" id="thumb" aria-hidden="true" title="Back to the preview"></canvas>
+        <button type="button" class="btn primary" id="saveBtn">Save image</button>
+        <button type="button" class="btn" id="nextBtn">Next coin</button>
+      </div>
+    </section>
+
+    <section class="controls">
+      <section class="panel" aria-labelledby="h-photos">
+        <div class="panel-head">
+          <h2 id="h-photos"><span class="step">1</span>Photos</h2>
+          <button type="button" class="btn small quiet" id="swapBtn" disabled>Swap obverse and reverse</button>
+        </div>
+        <div class="pick-all" id="allPick">
+          <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="13" cy="15" r="9"/><circle cx="35" cy="15" r="9"/><rect x="11" y="29" width="26" height="15" rx="1.5"/></svg>
+          <span class="pick-all-text"><b>Add photos</b><small>Select one coin's obverse, reverse and certificate, or a whole session's photos for a batch. They're sorted for you, and Claude reads each label and checks which side is the obverse.</small></span>
+          <input type="file" id="allInput" accept="image/*" multiple class="tile-input" aria-label="Add photos">
+        </div>
+        <div class="tiles">
+          <div class="tile">
+            <div class="tile-hit" id="obvPick">
+              <canvas id="obvThumb" aria-hidden="true" hidden></canvas>
+              <span class="tile-empty" id="obvEmpty">
+                <svg viewBox="0 0 48 48" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="15" stroke-dasharray="2 3"/></svg>
+                <span>Add photo</span>
+              </span>
+              <span class="tile-busy" id="obvBusy" hidden>Finding…</span>
+              <input type="file" id="obvInput" accept="image/*" class="tile-input" aria-label="Obverse photo" aria-describedby="obvSub">
+            </div>
+            <div class="tile-meta"><span class="tile-title">Obverse</span><span class="tile-sub" id="obvSub">Coin photo</span></div>
+          </div>
+          <div class="tile">
+            <div class="tile-hit" id="revPick">
+              <canvas id="revThumb" aria-hidden="true" hidden></canvas>
+              <span class="tile-empty" id="revEmpty">
+                <svg viewBox="0 0 48 48" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="15" stroke-dasharray="2 3"/></svg>
+                <span>Add photo</span>
+              </span>
+              <span class="tile-busy" id="revBusy" hidden>Finding…</span>
+              <input type="file" id="revInput" accept="image/*" class="tile-input" aria-label="Reverse photo" aria-describedby="revSub">
+            </div>
+            <div class="tile-meta"><span class="tile-title">Reverse</span><span class="tile-sub" id="revSub">Coin photo</span></div>
+          </div>
+          <div class="tile">
+            <div class="tile-hit" id="certPick">
+              <canvas id="certThumb" aria-hidden="true" hidden></canvas>
+              <span class="tile-empty" id="certEmpty">
+                <svg viewBox="0 0 48 48" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="9" width="38" height="30" rx="2"/><path d="M11 17h26M11 23h16M11 31h10"/></svg>
+                <span>Add photo</span>
+              </span>
+              <span class="tile-busy" id="certBusy" hidden>Finding…</span>
+              <input type="file" id="certInput" accept="image/*" class="tile-input" aria-label="Certificate photo" aria-describedby="certSub">
+            </div>
+            <div class="tile-meta"><span class="tile-title">Certificate</span><span class="tile-sub" id="certSub">Label photo</span></div>
+          </div>
+        </div>
+        <p class="note">Coin photos can be the coin alone or shot through the holder. For the certificate, shoot the label straight on with no glare. PCGS, NGC and ICCS labels all fit.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="h-crop">
+        <div class="panel-head">
+          <h2 id="h-crop"><span class="step">2</span>Crop</h2>
+          <div class="seg" role="radiogroup" aria-label="Photo to crop">
+            <input type="radio" name="side" id="sideObv" value="obv" checked><label for="sideObv"><span class="dot" id="dotObv"></span>Obverse</label>
+            <input type="radio" name="side" id="sideRev" value="rev"><label for="sideRev"><span class="dot" id="dotRev"></span>Reverse</label>
+            <input type="radio" name="side" id="sideCert" value="cert"><label for="sideCert"><span class="dot" id="dotCert"></span>Certificate</label>
+          </div>
+        </div>
+        <div class="editor-wrap" id="editorWrap">
+          <canvas id="editor" tabindex="0" aria-label="Crop. Drag to move, pinch to resize, or use the arrow and plus or minus keys." hidden></canvas>
+          <p class="editor-empty" id="editorEmpty">Add a photo in step 1 and it's cropped for you.</p>
+          <span class="busy-chip" id="busyChip" hidden><span class="spin" aria-hidden="true"></span><span id="busyText">Finding the coin…</span></span>
+        </div>
+        <p class="note" id="cropNote"></p>
+        <div class="crop-row">
+          <canvas class="crop-prev" id="cropPrev" aria-label="Cropped result" role="img"></canvas>
+          <div class="sliders">
+            <div class="range" id="sizeWrap">
+              <div class="range-top"><label for="sizeRange">Size</label><output id="sizeOut" for="sizeRange">–</output></div>
+              <input type="range" id="sizeRange" min="30" max="700" step="1" value="300" disabled>
+            </div>
+            <div class="range">
+              <div class="range-top"><label for="rotRange" id="rotLabel">Rotate</label><output id="rotOut" for="rotRange">0°</output></div>
+              <input type="range" id="rotRange" min="-180" max="180" step="0.5" value="0" disabled>
+            </div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn small" id="rotL" disabled>Turn left 90°</button>
+          <button type="button" class="btn small" id="rotR" disabled>Turn right 90°</button>
+          <button type="button" class="btn small" id="ringBtn" hidden>Other ring</button>
+          <button type="button" class="btn small" id="autoBtn" disabled>Find again</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-details">
+        <h2 id="h-details"><span class="step">3</span>Details</h2>
+        <div class="read-row">
+          <button type="button" class="btn ink" id="readBtn" disabled>Read certificate with Claude</button>
+          <button type="button" class="btn small quiet" id="stopBtn" hidden>Stop</button>
+        </div>
+        <p class="note" id="readNote" aria-live="polite"></p>
+        <div class="fields">
+          <div class="field" id="w-fDate"><label for="fDate">Date</label><input id="fDate" autocomplete="off" placeholder="1936 Dot"></div>
+          <div class="field" id="w-fDenom"><label for="fDenom">Denomination</label><input id="fDenom" autocomplete="off" placeholder="1¢"></div>
+          <div class="field" id="w-fGrade"><label for="fGrade">Grade</label><input id="fGrade" autocomplete="off" autocapitalize="characters" placeholder="MS-64 RD"></div>
+          <div class="field" id="w-fService"><label for="fService">Grading service</label><input id="fService" list="services" autocomplete="off" autocapitalize="characters" placeholder="PCGS, NGC, ICCS"></div>
+          <div class="field full" id="w-fCert"><label for="fCert">Cert number</label><input id="fCert" class="mono" autocomplete="off" placeholder="12345678"></div>
+          <div class="field full" id="w-fNotes"><label for="fNotes">Variety / comments</label><textarea id="fNotes" rows="2" placeholder="Variety, die markers, pedigree"></textarea></div>
+        </div>
+        <p class="note">The certificate photo carries these details on the plate. Here they name the saved file so your folder sorts by date, denomination (in cents), grade, comment, then certificate: <span class="mono-inline" id="namePreview">coin-plate.jpg</span>. They're also saved inside the image as its title, subject, tags and comments, so desktop search finds a grade or cert number.</p>
+        <datalist id="services"><option value="PCGS"><option value="NGC"><option value="ICCS"><option value="ANACS"><option value="CCCS"><option value="CGS"></datalist>
+      </section>
+
+      <section class="panel" aria-labelledby="h-look">
+        <h2 id="h-look"><span class="step">4</span>Look</h2>
+        <div class="look">
+          <div class="look-row" role="radiogroup" aria-labelledby="l-bg">
+            <span class="look-label" id="l-bg">Background</span>
+            <div class="swatches">
+              <span class="swatch"><input type="radio" name="bg" id="bgBlack" value="black"><label for="bgBlack"><i style="background:#000"></i>Black</label></span>
+              <span class="swatch"><input type="radio" name="bg" id="bgGraphite" value="graphite"><label for="bgGraphite"><i style="background:#1C2024"></i>Graphite</label></span>
+              <span class="swatch"><input type="radio" name="bg" id="bgWhite" value="white"><label for="bgWhite"><i style="background:#fff"></i>White</label></span>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="capChk"><span><b>Obverse and reverse captions</b><small>Prints OBVERSE and REVERSE under the coins</small></span></label>
+        </div>
+      </section>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-inner">
+    <img id="viewerImg" alt="Finished plate">
+    <p>Press and hold the image to save it to your phone.</p>
+    <button type="button" class="btn" id="viewerClose">Close</button>
+  </div>
+</div>

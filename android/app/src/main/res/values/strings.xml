@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Slab Plates</string>
+    <string name="title_activity_main">Slab Plates</string>
+    <string name="package_name">com.fntc2014.slabplates</string>
+    <string name="custom_url_scheme">com.fntc2014.slabplates</string>
+</resources>

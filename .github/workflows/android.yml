@@ -1,0 +1,81 @@
+name: Build Android app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Check the signing secret
+        id: secret
+        env:
+          KEYSTORE_PASSPHRASE: ${{ secrets.KEYSTORE_PASSPHRASE }}
+        run: |
+          if [ -z "$KEYSTORE_PASSPHRASE" ]; then
+            echo "::warning::The KEYSTORE_PASSPHRASE secret isn't set yet, so this build is checked but not published."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the page
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      - name: Unlock the signing key
+        if: steps.secret.outputs.signed == 'true'
+        env:
+          KEYSTORE_PASSPHRASE: ${{ secrets.KEYSTORE_PASSPHRASE }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in android/app/signing/slabplates.p12.enc \
+            -out android/app/signing/slabplates.p12 \
+            -pass env:KEYSTORE_PASSPHRASE
+
+      - name: Build the app
+        working-directory: android
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          SIGNING_STORE_FILE: ${{ steps.secret.outputs.signed == 'true' && 'signing/slabplates.p12' || '' }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSPHRASE }}
+          SIGNING_KEY_ALIAS: slabplates
+          SIGNING_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSPHRASE }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Publish the download
+        if: steps.secret.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk SlabPlates.apk
+          gh release create "v1.0.${{ github.run_number }}" SlabPlates.apk \
+            --title "Slab Plates 1.0.${{ github.run_number }}" \
+            --notes "On your phone, download SlabPlates.apk below and open it to install or update. Built from ${{ github.sha }}." \
+            --latest

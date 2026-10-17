@@ -1,0 +1,5 @@
+node_modules/
+www/
+dist/
+*.p12
+!*.p12.enc

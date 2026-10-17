@@ -1,0 +1,19 @@
+{
+  "name": "slab-plates",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Obverse/reverse coin plates with the certificate, built from holder photos.",
+  "scripts": {
+    "build": "node tools/build-web.mjs",
+    "sync": "npm run build && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/cli": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@fontsource/cinzel": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "@fontsource/tinos": "5.3.0"
+  }
+}

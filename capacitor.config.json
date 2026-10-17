@@ -1,0 +1,8 @@
+{
+  "appId": "com.fntc2014.slabplates",
+  "appName": "Slab Plates",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0E1012"
+  }
+}
