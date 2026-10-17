@@ -1990,13 +1990,15 @@
   const API = "https://api.ebay.com";
   const ebay = {
     status: { configured: false, connected: false, user: "" },
-    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", grams: "120", size: "19 x 13 x 3", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
+    settings: { shipping: "", payment: "", returns: "", location: "Brantford, Ontario", postal: "", grams: "50", size: "6 x 9 x 1 in", footer: Listing ? Listing.DEFAULT_FOOTER : "" },
     cache: { ship: [], pay: [], ret: [], cats: [], store: [], at: 0 },
     busy: false, loading: false, loadMsg: "", photoKey: "",
   };
   try {
     const saved = JSON.parse(localStorage.getItem(EBAY_STORE) || "{}");
     if (saved.settings) Object.assign(ebay.settings, saved.settings);
+    // the first defaults (120 g, 19 x 13 x 3 cm) were a guess; your parcels are 50 g, 6 x 9 x 1 in
+    if (ebay.settings.grams === "120" && ebay.settings.size === "19 x 13 x 3") { ebay.settings.grams = "50"; ebay.settings.size = "6 x 9 x 1 in"; }
     if (saved.cache) Object.assign(ebay.cache, saved.cache);
   } catch (e) { /* storage unavailable */ }
   const saveEbay = () => { try { localStorage.setItem(EBAY_STORE, JSON.stringify({ settings: ebay.settings, cache: ebay.cache })); } catch (e) { /* ignore */ } };
@@ -2097,7 +2099,9 @@
   // The parcel from eBay settings: weight in grams, size "19 x 13 x 3" in centimetres.
   function packOf() {
     const set = ebay.settings, n = String(set.size || "").match(/\d+(?:\.\d+)?/g) || [];
-    return { grams: Number(String(set.grams || "").replace(/[^\d.]/g, "")) || 0, l: Number(n[0]) || 19, w: Number(n[1]) || 13, h: Number(n[2]) || 3 };
+    // centimetres unless marked in inches ("in", "inch" or ")
+    const k = /in|"|”/i.test(String(set.size || "")) ? 2.54 : 1, d = (i, def) => (Number(n[i]) || def) * k;
+    return { grams: Number(String(set.grams || "").replace(/[^\d.]/g, "")) || 0, l: d(0, 9), w: d(1, 6), h: d(2, 1) };
   }
   function listingProblem(L) {
     if (!ebay.status.connected) return "Connect your eBay account first.";
