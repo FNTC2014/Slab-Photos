@@ -16,9 +16,10 @@ jobs:
         run: |
           for ua in "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" "SlabPlates/1.0"; do
             for u in https://en.numista.com/catalogue/photos/canada/1017-original.jpg https://en.numista.com/catalogue/photos/canada/1017-180.jpg https://en.numista.com/440; do
-              echo "== $u ($ua)"; curl -sS -A "$ua" -o /dev/null -D - --max-time 30 "$u" | head -12 || true
+              echo "== $u ($ua)"; curl -sS -A "$ua" -o /dev/null -D - --max-time 30 "$u" 2>&1 | head -14 || true
             done
-          done
+          done > probe.txt 2>&1
+          cat probe.txt
       - name: Download obverse and reverse photos for each type
         run: |
           mkdir -p refs
@@ -44,6 +45,6 @@ jobs:
           openssl rand -out key.bin 32
           openssl enc -aes-256-cbc -pbkdf2 -salt -in refs.zip -out refs.zip.enc -pass file:key.bin
           openssl pkeyutl -encrypt -pubin -inkey tools/fetch.pub -in key.bin -out key.bin.enc
-          mkdir -p out && mv refs.zip.enc key.bin.enc out/
+          mkdir -p out && mv refs.zip.enc key.bin.enc out/ && cp probe.txt out/
           git config user.name "github-actions" && git config user.email "actions@github.com"
           git add out && git commit -qm "Encrypted coin reference photos [skip ci]" && git push -q
