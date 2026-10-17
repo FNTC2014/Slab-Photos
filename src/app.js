@@ -56,7 +56,7 @@
   let verSeq = 0, photoSeq = 0;
   const blankSide = () => ({ src: null, w: 0, h: 0, cx: 0, cy: 0, r: 0, rot: 0, rw: 0, rh: 0, base: 0, tilt: 0,
     ver: ++verSeq, photoId: 0, manual: false, found: false, busy: false, rings: [], ringIdx: 0, prior: null,
-    orient: null, rotAuto: true, upFrom: "", textUp: null, textFine: null, textDone: false, textJob: null, legend: 0,
+    orient: null, rotAuto: true, upFrom: "", textUp: null, textFine: null, typeM: null, typeKey: "", textDone: false, textJob: null, legend: 0,
     grays: null, note: "", ed: null, edKey: "", tile: null, tileKey: "" });
   const sides = { obv: blankSide(), rev: blankSide(), cert: blankSide() };
   let active = "obv";
@@ -159,11 +159,14 @@
     const cands = [0, 90, 180, 270].map((q) => Math.round(wrap180(base + q) * 10) / 10);
     // The coin's own lettering has the last word: a coin can sit crooked in its holder. When it
     // lands within a few degrees of a way the holder is square, the holder's exact angle is used.
-    if (typeof side.textFine === "number") {
-      const want = wrap180(-side.textFine);
+    // A match against the coin's own type (its design) comes first, then its lettering.
+    const own = side.typeM ? { up: side.typeM.up, sq: "type", turned: "type" } : typeof side.textFine === "number" ? { up: side.textFine, sq: "text", turned: "coin" } : null;
+    if (own) {
+      const want = wrap180(-own.up);
       let best = 0;
       cands.forEach((c, q) => { if (Math.abs(wrap180(c - want)) < Math.abs(wrap180(cands[best] - want))) best = q; });
-      return Math.abs(wrap180(cands[best] - want)) <= 3 ? { rot: cands[best], from: "text" } : { rot: Math.round(want * 10) / 10, from: "coin" };
+      // (with no holder edges in view there's nothing exact to snap to)
+      return o && Math.abs(wrap180(cands[best] - want)) <= 3 ? { rot: cands[best], from: own.sq } : { rot: Math.round(want * 10) / 10, from: own.turned };
     }
     let pick = 0, from = "photo";
     if (o && o.label && QUARTER[o.label] != null) { pick = (((key === "rev" ? 2 : 0) - QUARTER[o.label] / 90) % 4 + 4) % 4; from = "label"; }
@@ -181,6 +184,7 @@
     return { rot: cands[pick], from };
   }
   function autoRot(side, key) {
+    ensureType(side, key);
     const s = straightenOf(side, key);
     side.upFrom = s.from;
     return s.rot;
@@ -205,6 +209,143 @@
       if (r !== s.rot) { s.rot = r; bump(s); }
     }
   }
+  /* ---------- coin types: turning a coin by its design ----------
+     Each Canadian type from 1858 to 1967 has an upright obverse and reverse in coinrefs.js
+     (from the Numista catalogue, reduced to a map of where the design's edges sit around the
+     centre). The label's date and denomination say which type a coin is; its photo is then
+     lined up against that type's design, which gives the exact angle whatever the lettering
+     does. Plates you save add your own photos of each type, so it keeps getting surer. */
+  const TypeMatch = typeof typeMatchModule === "function" ? typeMatchModule() : null;
+  const typeLib = [];
+  let typeLibVer = 0;
+  if (TypeMatch && typeof coinRefsData === "function") {
+    try {
+      for (const r of coinRefsData()) typeLib.push({ side: r.s, denom: r.d, y0: r.y0, y1: r.y1, name: r.name, from: "catalogue", p: TypeMatch.prepare(TypeMatch.unpack(TypeMatch.fromB64(r.b))) });
+    } catch (e) { typeLib.length = 0; }
+  }
+  const yearOf = (s) => { const m = String(s || "").match(/\b(1[5-9]\d\d|20\d\d)\b/); return m ? Number(m[1]) : 0; };
+  const denomKey = (s) => { const d = s ? denomPart(s) : ""; return /^\d{4}(\.\d+)?c$/.test(d) ? d : ""; };
+  // The coin as photographed (not turned), at the size the design map is measured on.
+  function coinGray(side, rot) {
+    const n = TypeMatch.N, c = document.createElement("canvas");
+    c.width = c.height = n;
+    const x = c.getContext("2d");
+    x.fillStyle = "#000"; x.fillRect(0, 0, n, n);
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.translate(n / 2, n / 2); x.rotate((rot * Math.PI) / 180);
+    const k = n / (2 * side.r);
+    x.scale(k, k);
+    x.drawImage(side.src, -side.cx, -side.cy);
+    const d = x.getImageData(0, 0, n, n).data, g = new Float32Array(n * n);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+    return g;
+  }
+  const descCache = new Map();
+  function coinDesc(side, rot) {
+    const key = [side.photoId, Math.round(side.cx), Math.round(side.cy), Math.round(side.r), rot || 0].join("|");
+    if (!descCache.has(key)) {
+      if (descCache.size > 12) descCache.delete(descCache.keys().next().value);
+      descCache.set(key, TypeMatch.prepare(TypeMatch.describe(coinGray(side, rot || 0), TypeMatch.N)));
+    }
+    return descCache.get(key);
+  }
+  // Which references to try: this side's, of the label's year and denomination when known. With
+  // a year but no reference of that denomination, the same years' other coins stand in (a
+  // monarch's portrait is the same design on every denomination).
+  function typeCands(key) {
+    const v = values(), denom = denomKey(v.denom), year = yearOf(v.date);
+    const all = typeLib.filter((r) => r.side === key);
+    const byYear = year ? all.filter((r) => year >= r.y0 && year <= r.y1) : [];
+    const exact = denom ? byYear.filter((r) => r.denom === denom) : [];
+    if (exact.length) return { list: exact, mode: "exact" };
+    if (byYear.length) return { list: byYear, mode: "era" };
+    const byDenom = denom ? all.filter((r) => r.denom === denom) : [];
+    return { list: byDenom.length ? byDenom : all, mode: "guess" };
+  }
+  // How sure a match has to be, measured on photos of the same designs taken by different people
+  // (score 0.2 lines up within 4° about 96% of the time; other designs rarely pass 0.3). Knowing
+  // the type from the label, the design only has to line up; guessing, it must stand clear.
+  const TYPE_SURE = { exact: { score: 0.2, margin: 0.05 }, era: { score: 0.25, margin: 0.08 }, guess: { score: 0.33, margin: 0.1 } };
+  function matchType(side, key) {
+    const { list, mode } = typeCands(key);
+    if (!list.length) return null;
+    const q = coinDesc(side, 0);
+    const ms = list.map((r) => ({ ...TypeMatch.compare(q, r.p), ref: r })).sort((a, b) => b.score - a.score);
+    const best = ms[0], need = TYPE_SURE[mode];
+    // two photos of the type agreeing count as much as one clear match
+    const agree = ms.filter((m) => m !== best && m.score >= 0.15 && Math.abs(wrap180(m.turn - best.turn)) <= 5);
+    const sure = (best.score >= need.score && best.margin >= need.margin) || (mode !== "guess" && best.score >= 0.15 && agree.length > 0);
+    if (!sure) return null;
+    // a different design scoring nearly as well but pointing elsewhere: not sure enough
+    const rival = ms.find((m) => m.ref.name !== best.ref.name && Math.abs(wrap180(m.turn - best.turn)) > 10);
+    if (mode === "guess" && rival && rival.score > best.score - 0.04) return null;
+    // the angle: the good matches that agree with the best, weighted by how well they match
+    let wx = 0, wy = 0;
+    for (const m of [best, ...agree]) { if (m.score < best.score - 0.1) continue; const t = (m.turn * Math.PI) / 180; wx += m.score * Math.cos(t); wy += m.score * Math.sin(t); }
+    const up = Math.round(((Math.atan2(wy, wx) * 180) / Math.PI) * 10) / 10;
+    return { up, score: Math.round(best.score * 100) / 100, name: best.ref.name, from: best.ref.from, mode };
+  }
+  function ensureType(side, key) {
+    if (!TypeMatch || !side.src || !side.found || !typeLib.length) { side.typeM = null; return; }
+    const v = values();
+    const tk = [side.photoId, Math.round(side.cx), Math.round(side.cy), Math.round(side.r), key, denomKey(v.denom), yearOf(v.date), typeLibVer].join("|");
+    if (side.typeKey === tk) return;
+    side.typeKey = tk;
+    try { side.typeM = matchType(side, key); } catch (e) { side.typeM = null; }
+  }
+
+  // Your own saved plates, kept on this device, teach it each type in your lighting.
+  const TYPE_DB = "slabplates-types", MINE_PER = 8;
+  function typeDb() {
+    return new Promise((ok, no) => {
+      if (!window.indexedDB) { no(new Error("no storage")); return; }
+      const r = indexedDB.open(TYPE_DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("refs", { keyPath: "id", autoIncrement: true });
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => no(r.error);
+    });
+  }
+  const dbAll = (db) => new Promise((ok, no) => { const q = db.transaction("refs").objectStore("refs").getAll(); q.onsuccess = () => ok(q.result || []); q.onerror = () => no(q.error); });
+  const dbDo = (db, fn) => new Promise((ok, no) => { const t = db.transaction("refs", "readwrite"); fn(t.objectStore("refs")); t.oncomplete = () => ok(); t.onerror = () => no(t.error); });
+  if (TypeMatch) typeDb().then(dbAll).then((rows) => {
+    for (const r of rows) typeLib.push({ id: r.id, side: r.side, denom: r.denom, y0: r.year, y1: r.year, name: r.name, from: "yours", at: r.at, p: TypeMatch.prepare(TypeMatch.unpack(TypeMatch.fromB64(r.b))) });
+    if (rows.length) { typeLibVer++; restraighten(); }
+  }).catch(() => { /* kept for this session only */ });
+  async function learnTypes() {
+    if (!TypeMatch) return;
+    const v = values(), denom = denomKey(v.denom), year = yearOf(v.date);
+    if (!denom || !year) return;
+    const add = [];
+    for (const key of ["obv", "rev"]) {
+      const s = sides[key];
+      if (!s.src || !s.found) continue;
+      const d = TypeMatch.describe(coinGray(s, s.rot), TypeMatch.N), p = TypeMatch.prepare(d);
+      const same = typeLib.filter((r) => r.side === key && r.denom === denom && year >= r.y0 && year <= r.y1);
+      // as saved it should be upright: skip it if the catalogue design says otherwise, or if
+      // it's a near copy of one already kept
+      let skip = false;
+      for (const r of same) {
+        const m = TypeMatch.compare(p, r.p);
+        if (r.from === "catalogue" && m.score >= TYPE_SURE.exact.score && Math.abs(m.turn) > 8) skip = true;
+        if (r.from === "yours" && m.score > 0.85 && Math.abs(m.turn) < 2) skip = true;
+      }
+      if (!skip) add.push({ side: key, denom, year, name: [v.date, v.denom].filter(Boolean).join(" "), at: Date.now(), b: TypeMatch.toB64(TypeMatch.pack(d)), p });
+    }
+    if (!add.length) return;
+    for (const a of add) typeLib.push({ side: a.side, denom: a.denom, y0: a.year, y1: a.year, name: a.name, from: "yours", at: a.at, p: a.p });
+    typeLibVer++;
+    try {
+      const db = await typeDb();
+      await dbDo(db, (st) => { for (const a of add) { const { p, ...row } = a; st.add(row); } });
+      // keep the newest few of each denomination and side
+      const rows = await dbAll(db), drop = [];
+      const groups = new Map();
+      for (const r of rows) { const g = r.side + r.denom; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(r); }
+      for (const g of groups.values()) if (g.length > MINE_PER) drop.push(...g.sort((a, b) => b.at - a.at).slice(MINE_PER));
+      if (drop.length) await dbDo(db, (st) => { for (const r of drop) st.delete(r.id); });
+    } catch (e) { /* this session only */ }
+  }
+
   function applyRect(side, res, prior) {
     if (res && res.rw > 8 && res.rh > 8) {
       Object.assign(side, { cx: res.cx, cy: res.cy, rw: res.rw, rh: res.rh, base: 0, tilt: Math.round(res.rot * 10) / 10 });
@@ -803,10 +944,11 @@
     let straight = "";
     if (coin && has && side.found && side.rotAuto && !side.busy) {
       const why = { text: "the lettering", label: "where the label is", habit: "how you usually shoot holder backs" }[side.upFrom];
-      if (side.upFrom === "coin") straight = "Turned upright by the coin's own lettering, as the coin sits crooked in its holder. ";
+      if (side.upFrom === "type" || (side.upFrom === "text" && side.typeM)) straight = `Turned upright by matching the ${side.typeM ? side.typeM.name : "coin's"} design. `;
+      else if (side.upFrom === "coin") straight = "Turned upright by the coin's own lettering, as the coin sits crooked in its holder. ";
       else if (side.upFrom === "text" && typeof side.textFine === "number") straight = "Straightened to the holder, checked against the coin's lettering. ";
       else if (side.orient) straight = "Straightened to the holder's edges. ";
-      if (side.upFrom !== "coin" && why && Math.abs(side.rot) > 45) straight += `Turned the right way up going by ${why}. `;
+      if (side.upFrom !== "coin" && side.upFrom !== "type" && !side.typeM && why && Math.abs(side.rot) > 45) straight += `Turned the right way up going by ${why}. `;
     }
     const hint = coin
       ? straight + "Drag the ring to move it. Pinch or use Size to sit it on the coin's outer edge."
@@ -1212,6 +1354,7 @@
     put("fCert", str(d.cert));
     put("fNotes", [str(d.variety), str(d.comments)].filter(Boolean).join(" · "));
     useLabelBox(cert, d.label_box);
+    restraighten();
     let sidesNote = "";
     if (coinCtx && sides.obv === coinCtx.obv && sides.rev === coinCtx.rev) {
       const pick = Number(d.obverse_image);
@@ -1396,6 +1539,7 @@
     if (saving) return "";
     if (exampleMode()) { toast("Add your photos first. The plate above is an example."); return ""; }
     learnHabit();
+    try { learnTypes(); } catch (e) { /* not learned */ }
     const btn = $("saveBtn");
     btn.disabled = true; saving = true;
     try {
@@ -1468,7 +1612,7 @@
      is kept as the picked files plus what was found in them, so a phone doesn't run out of memory. */
   const batch = { active: false, busy: false, groups: [], idx: -1, progress: "", stripKey: "", advanceOnClose: false };
   const PARAMS = ["cx", "cy", "r", "rot", "rw", "rh", "base", "tilt", "rings", "ringIdx", "manual", "found", "note", "prior",
-    "orient", "rotAuto", "upFrom", "textUp", "textFine", "textDone", "legend"];
+    "orient", "rotAuto", "upFrom", "textUp", "textFine", "typeM", "typeKey", "textDone", "legend"];
 
   function thumbOf(side, res) {
     const S = 96, c = document.createElement("canvas");
@@ -2351,6 +2495,9 @@
   });
   $("thumb").addEventListener("click", () => $("plate").scrollIntoView({ behavior: "smooth", block: "center" }));
   for (const k in FIELDS) $(FIELDS[k]).addEventListener("input", markDirty);
+  // a typed date or denomination says which coin type to line the coins up against
+  let typeTimer = 0;
+  for (const id of ["fDate", "fDenom"]) $(id).addEventListener("input", () => { clearTimeout(typeTimer); typeTimer = setTimeout(restraighten, 500); });
 
   const bgInput = { black: "bgBlack", graphite: "bgGraphite", white: "bgWhite" };
   $(bgInput[look.bg]).checked = true;
@@ -2391,7 +2538,7 @@
     : Promise.resolve();
 
   // test hook: only present when a test page asks for it before the app loads
-  if (window.__slabDebug) window.__slabDebug.state = () => ({ sides, batch });
+  if (window.__slabDebug) { window.__slabDebug.state = () => ({ sides, batch }); window.__slabDebug.types = () => typeLib.map((r) => [r.side, r.denom, r.y0, r.from]); }
 
   render();
 })();
