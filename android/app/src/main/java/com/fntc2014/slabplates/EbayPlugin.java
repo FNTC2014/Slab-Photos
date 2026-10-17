@@ -158,6 +158,7 @@ public class EbayPlugin extends Plugin {
     private void showSignIn(final PluginCall call, String url, final String state) {
         final Activity act = getActivity();
         final boolean[] done = { false };
+        final String[] seenError = { null };
         final Dialog dialog = new Dialog(act, android.R.style.Theme_DeviceDefault_Light_NoActionBar);
 
         LinearLayout root = new LinearLayout(act);
@@ -175,7 +176,10 @@ public class EbayPlugin extends Plugin {
         title.setTextColor(0xFF15181C);
         bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         Button cancel = new Button(act, null, android.R.attr.borderlessButtonStyle);
-        cancel.setText("Cancel");
+        cancel.setText("Close");
+        cancel.setTextColor(0xFF0B57D0);
+        cancel.setAllCaps(false);
+        cancel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         bar.addView(cancel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -254,6 +258,7 @@ public class EbayPlugin extends Plugin {
                         return;
                     }
                     if (id.isEmpty() && desc.isEmpty()) return;
+                    seenError[0] = desc.isEmpty() ? id : desc;
                     done[0] = true;
                     dialog.dismiss();
                     call.reject("eBay refused the sign-in request: " + (desc.isEmpty() ? id : desc) + (id.isEmpty() ? "" : " (" + id + ")"), "EBAY_AUTH");
@@ -272,7 +277,8 @@ public class EbayPlugin extends Plugin {
             }
             if (!done[0]) {
                 done[0] = true;
-                call.reject("Sign-in was cancelled.", "CANCELLED");
+                if (seenError[0] != null) call.reject("eBay refused the sign-in request: " + seenError[0], "EBAY_AUTH");
+                else call.reject("Sign-in was cancelled.", "CANCELLED");
             }
         });
         cancel.setOnClickListener(v -> dialog.dismiss());

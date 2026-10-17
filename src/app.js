@@ -1670,10 +1670,12 @@
     $("ebayConnectNote").textContent = !st.configured
       ? "eBay isn't switched on in this copy of the app yet. It arrives in an update once the eBay developer keys are added."
       : "Connect your eBay account to list each coin straight from here, with the plate and crops as its photos.";
-    const failed = !!(ebay.connectError && st.configured && !st.connected);
-    $("ebayConnectErr").hidden = !failed;
-    if (failed) {
-      $("ebayErrText").textContent = ebay.connectError;
+    // the App ID and RuName are public (they're in every eBay sign-in link); showing them makes the setup easy to check
+    const showIds = !!(st.configured && !st.connected);
+    $("ebayConnectErr").hidden = !showIds;
+    if (showIds) {
+      $("ebayErrText").hidden = !ebay.connectError;
+      $("ebayErrText").textContent = ebay.connectError || "";
       $("ebayIdApp").textContent = st.clientId || "(missing)";
       $("ebayIdRu").textContent = st.ruName || "(missing)";
     }
