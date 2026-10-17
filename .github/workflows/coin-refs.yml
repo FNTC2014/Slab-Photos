@@ -12,6 +12,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: Probe
+        run: |
+          for ua in "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" "SlabPlates/1.0"; do
+            for u in https://en.numista.com/catalogue/photos/canada/1017-original.jpg https://en.numista.com/catalogue/photos/canada/1017-180.jpg https://en.numista.com/440; do
+              echo "== $u ($ua)"; curl -sS -A "$ua" -o /dev/null -D - --max-time 30 "$u" | head -12 || true
+            done
+          done
       - name: Download obverse and reverse photos for each type
         run: |
           mkdir -p refs
