@@ -1670,6 +1670,13 @@
     $("ebayConnectNote").textContent = !st.configured
       ? "eBay isn't switched on in this copy of the app yet. It arrives in an update once the eBay developer keys are added."
       : "Connect your eBay account to list each coin straight from here, with the plate and crops as its photos.";
+    const failed = !!(ebay.connectError && st.configured && !st.connected);
+    $("ebayConnectErr").hidden = !failed;
+    if (failed) {
+      $("ebayErrText").textContent = ebay.connectError;
+      $("ebayIdApp").textContent = st.clientId || "(missing)";
+      $("ebayIdRu").textContent = st.ruName || "(missing)";
+    }
     if (!st.connected) return;
     autoFill(L, v);
     setVal("eTitle", L.title);
@@ -1889,12 +1896,15 @@
   async function connectEbay() {
     try {
       const r = await EbayNative.connect();
-      ebay.status = { configured: true, connected: true, user: (r && r.user) || "" };
+      ebay.connectError = "";
+      ebay.status = { ...ebay.status, configured: true, connected: true, user: (r && r.user) || "" };
       toast(r && r.user ? `Connected to eBay as ${r.user}.` : "Connected to eBay.");
       renderListing(); renderSheet();
       loadAccountData();
     } catch (e) {
       if (e && e.code === "CANCELLED") return;
+      ebay.connectError = errText(e);
+      renderListing();
       toast(errText(e));
     }
   }

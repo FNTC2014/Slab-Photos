@@ -117,7 +117,7 @@ public class EbayPlugin extends Plugin {
 
     private static String enc(String s) {
         try {
-            return URLEncoder.encode(s, "UTF-8");
+            return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
         } catch (Exception e) {
             return s;
         }
@@ -131,6 +131,9 @@ public class EbayPlugin extends Plugin {
         r.put("configured", configured());
         r.put("connected", configured() && connected());
         r.put("user", prefs.getString("user", ""));
+        // public values (they appear in every sign-in link), shown to help check the setup
+        r.put("clientId", clientId());
+        r.put("ruName", ruName());
         call.resolve(r);
     }
 
@@ -226,8 +229,35 @@ public class EbayPlugin extends Plugin {
             }
 
             @Override
-            public void onPageFinished(WebView view, String u) {
+            public void onPageFinished(final WebView view, String u) {
                 progress.setVisibility(View.GONE);
+                Uri p = u == null ? null : Uri.parse(u);
+                String host = p == null || p.getHost() == null ? "" : p.getHost().toLowerCase();
+                if (done[0] || !host.startsWith("auth.") || !host.contains("ebay")) return;
+                // eBay answers a bad sign-in request with a bare JSON error instead of a page
+                view.evaluateJavascript("(function(){return document.body ? document.body.innerText.slice(0, 800) : '';})()", value -> {
+                    if (done[0] || value == null) return;
+                    String text;
+                    try {
+                        text = new JSONArray("[" + value + "]").getString(0);
+                    } catch (Exception e) {
+                        return;
+                    }
+                    int start = text.indexOf('{');
+                    if (start < 0 || !text.contains("error")) return;
+                    String id = "", desc = "";
+                    try {
+                        JSONObject err = new JSONObject(text.substring(start));
+                        id = err.optString("error_id", err.optString("error", ""));
+                        desc = err.optString("error_description", "");
+                    } catch (Exception e) {
+                        return;
+                    }
+                    if (id.isEmpty() && desc.isEmpty()) return;
+                    done[0] = true;
+                    dialog.dismiss();
+                    call.reject("eBay refused the sign-in request: " + (desc.isEmpty() ? id : desc) + (id.isEmpty() ? "" : " (" + id + ")"), "EBAY_AUTH");
+                });
             }
         });
         root.addView(web, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
