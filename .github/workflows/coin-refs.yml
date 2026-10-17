@@ -1,0 +1,38 @@
+name: Fetch coin type references
+
+on:
+  push:
+    branches: [coin-refs]
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download obverse and reverse photos for each type
+        run: |
+          mkdir -p refs
+          UA="SlabPlates/1.0 (personal coin photo app; github.com/FNTC2014/Slab-Photos)"
+          while IFS='|' read -r id denom y0 y1 name obv rev; do
+            [ -z "$id" ] && continue
+            for pair in "obv:$obv" "rev:$rev"; do
+              side="${pair%%:*}"; img="${pair#*:}"; ok=""
+              for size in original 400 180; do
+                url="https://en.numista.com/catalogue/photos/canada/${img}-${size}.jpg"
+                if curl -fsSL -A "$UA" --retry 2 --max-time 60 -o "refs/${id}-${side}.jpg" "$url"; then
+                  echo "${id}|${side}|${size}|$(stat -c %s refs/${id}-${side}.jpg)"; ok=1; break
+                fi
+              done
+              [ -z "$ok" ] && echo "${id}|${side}|FAILED"
+              sleep 1
+            done
+          done < tools/coin-refs.txt | tee refs/log.txt
+          cp tools/coin-refs.txt refs/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coin-refs
+          path: refs
+          retention-days: 3
